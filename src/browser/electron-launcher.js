@@ -205,38 +205,45 @@ async function launchProfileElectron(profile, options = {}) {
   }
 
   const httpUrl = `http://127.0.0.1:${port}`;
-  try {
-    await waitForCdpReady(port, 30000, { excludeAboutBlank: true });
-  } catch (error) {
-    let pages = [];
+  // 窗口已经拉起后的「页面就绪」等待（可能等真实站点加载几秒）。
+  // fastOpen：界面点「打开环境」时先返回，把这段放到后台；后续自动化 open 会 await 同一份 warmup。
+  const waitPageReady = async () => {
     try {
-      const list = await fetchJson(`http://127.0.0.1:${port}/json/list`);
-      pages = (Array.isArray(list) ? list : [])
-        .filter((t) => t.type === 'page')
-        .map((t) => String(t.url || ''));
+      await waitForCdpReady(port, 30000, { excludeAboutBlank: true });
+      return true;
+    } catch (error) {
+      let pages = [];
+      try {
+        const list = await fetchJson(`http://127.0.0.1:${port}/json/list`);
+        pages = (Array.isArray(list) ? list : [])
+          .filter((t) => t.type === 'page')
+          .map((t) => String(t.url || ''));
+      } catch { /* */ }
+      const tail = readLogTail(logFile);
+      const detail = `${error?.message || error}`
+        + (pages.length ? `\n窗口当前页面：${pages.join(' | ')}` : '')
+        + (tail ? `\n--- data/logs/env-${profile.id}.log ---\n${tail}` : '');
+      if (options.fastOpen) {
+        appendLog(logFile, `页面就绪等待失败（fastOpen 已返回，不杀进程）：${detail}`);
+        return false;
+      }
+      clearPid(profile.id);
+      try { child.kill(); } catch { /* */ }
+      throw new Error(detail);
+    }
+  };
+  const refreshWs = async () => {
+    let ws = ver.webSocketDebuggerUrl;
+    try {
+      const fresh = await fetchJson(`http://127.0.0.1:${port}/json/version`);
+      if (fresh?.webSocketDebuggerUrl) ws = fresh.webSocketDebuggerUrl;
     } catch { /* */ }
-    clearPid(profile.id);
-    try { child.kill(); } catch { /* */ }
-    const tail = readLogTail(logFile);
-    throw new Error(
-      `${error?.message || error}`
-      + (pages.length ? `\n窗口当前页面：${pages.join(' | ')}` : '')
-      + (tail ? `\n--- data/logs/env-${profile.id}.log ---\n${tail}` : '')
-    );
-  }
+    return ws;
+  };
 
-  let ws = ver.webSocketDebuggerUrl;
-  try {
-    const fresh = await fetchJson(`http://127.0.0.1:${port}/json/version`);
-    if (fresh?.webSocketDebuggerUrl) ws = fresh.webSocketDebuggerUrl;
-  } catch { /* */ }
-
-  appendLog(logFile, `CDP 就绪 port=${port} ws=${ws}`);
-
-  return {
+  const base = {
     pid: child.pid,
     port,
-    ws,
     http: httpUrl,
     headless,
     userDataDir,
@@ -249,6 +256,20 @@ async function launchProfileElectron(profile, options = {}) {
     releaseProxy: () => {},
     localProxyPort: 0,
   };
+
+  if (options.fastOpen) {
+    const warmup = (async () => {
+      await waitPageReady();
+      const readyWs = await refreshWs();
+      appendLog(logFile, `CDP 就绪（fastOpen 后台完成）port=${port} ws=${readyWs}`);
+    })().catch(() => {});
+    return { ...base, ws: ver.webSocketDebuggerUrl, warmup };
+  }
+
+  await waitPageReady();
+  const ws = await refreshWs();
+  appendLog(logFile, `CDP 就绪 port=${port} ws=${ws}`);
+  return { ...base, ws };
 }
 
 module.exports = {

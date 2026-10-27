@@ -104,6 +104,11 @@ async function openProfile(profileId, options = {}) {
     if (proxyChanged || metaNewer) {
       await closeProfile(id).catch(() => {});
     } else {
+      // 上次是 fastOpen：等后台的页面就绪/注入跑完再返回，保证调用方拿到的是可用会话
+      if (existing.warmup) {
+        try { await existing.warmup; } catch { /* */ }
+        existing.warmup = null;
+      }
       return formatOpenResult(id, existing);
     }
   }
@@ -111,8 +116,13 @@ async function openProfile(profileId, options = {}) {
 
   return enqueueOpen(async () => {
     dropStaleSession(id);
-    if (running.has(id) && isSessionAlive(running.get(id))) {
-      return formatOpenResult(id, running.get(id));
+    const already = running.get(id);
+    if (already && isSessionAlive(already)) {
+      if (already.warmup) {
+        try { await already.warmup; } catch { /* */ }
+        already.warmup = null;
+      }
+      return formatOpenResult(id, already);
     }
 
     // 扫掉队列等待期间死去的 session，再按上限保护内存
@@ -126,7 +136,15 @@ async function openProfile(profileId, options = {}) {
     if (!profile) throw new Error('browser环境不存在或已删除');
     try {
       const { enrichProfileProxyFromApi } = require('./proxy-enrich');
-      profile = await enrichProfileProxyFromApi(profile);
+      const hasProxy = Boolean(profile.proxy_host && profile.proxy_port);
+      // 只有「有代理但本地缺账密」时才必须等中心 API（否则建不出代理桥）；
+      // 其余情况后台静默刷新，不再让每次开窗都多等一次远程往返。
+      const needCreds = hasProxy
+        && (!String(profile.proxy_user || '').trim() || !String(profile.proxy_pass || ''));
+      const enrichPromise = enrichProfileProxyFromApi(profile).catch(() => profile);
+      if (needCreds) {
+        profile = await enrichPromise;
+      }
     } catch (error) {
       console.warn(`[manager] 代理 API 补全跳过: ${error?.message || error}`);
     }
@@ -137,15 +155,24 @@ async function openProfile(profileId, options = {}) {
       const { launchProfileInProcess } = require('./env-session-host');
       launched = await launchProfileInProcess(profile, { headless: options.headless, args: options.args });
     } else if (engine === 'electron') {
-      launched = await launchProfileElectron(profile, { headless: options.headless, args: options.args });
+      launched = await launchProfileElectron(profile, {
+        headless: options.headless, args: options.args, fastOpen: Boolean(options.fastOpen),
+      });
     } else {
-      launched = await launchProfile(profile, { headless: options.headless, args: options.args });
+      launched = await launchProfile(profile, {
+        headless: options.headless, args: options.args, fastOpen: Boolean(options.fastOpen),
+      });
     }
+
+    // fastOpen：窗口已起来但「页面就绪 / 指纹注入」还在后台跑，挂在 session 上供后续 open 等待
+    const warmup = launched && launched.warmup ? Promise.resolve(launched.warmup).catch(() => {}) : null;
+    if (launched && 'warmup' in launched) delete launched.warmup;
 
     const session = {
       ...launched,
       profile,
       startedAt: new Date().toISOString(),
+      warmup,
     };
     running.set(id, session);
     if (!isTestProfileId(id)) db.setProfileStatus(id, options.headless ? 'headless' : 'running');

@@ -76,18 +76,18 @@ function waitForPidExit(pid, timeoutMs = 8000) {
         resolve(false);
         return;
       }
-      setTimeout(tick, 150);
+      setTimeout(tick, 80);
     };
     tick();
   });
 }
 
 /** 打开前：杀掉该环境残留进程并等到退出 */
-async function reclaimBeforeOpen(profileId) {
+async function reclaimBeforeOpen(profileId, timeoutMs = 4000) {
   const pid = readPid(profileId);
   if (pid && isPidAlive(pid)) {
     killPid(pid);
-    await waitForPidExit(pid, 8000);
+    await waitForPidExit(pid, timeoutMs);
   }
   clearPid(profileId);
 }

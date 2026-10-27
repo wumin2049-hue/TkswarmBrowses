@@ -243,6 +243,8 @@ function createRouter() {
         headless,
         args,
         queue: req.body?.queue !== false,
+        // 界面点「打开环境」走 fastOpen：窗口起来即返回，页面就绪/指纹注入后台继续
+        fastOpen: req.body?.fastOpen === true,
         forceRelaunch: Boolean(req.body?.forceRelaunch || req.body?.force_relaunch),
       });
       res.json(ok(data));
@@ -390,8 +392,11 @@ function createRouter() {
         return res.json(ok(toBitProfile(row)));
       }
 
+      // 额度归属：可显式指定 ownerId（超管再绑环境耗用指定管理用户额度）；否则记在当前登录用户
+      const requestedOwner = Number(body.ownerId || body.owner_id || 0);
+      const ownerId = requestedOwner > 0 ? requestedOwner : Number(user.id || 0);
       const row = db.createProfile({
-        owner_id: user.id,
+        owner_id: ownerId,
         group_id: body.groupId || body.group_id || 'default',
         name: body.name || `TK-${Date.now()}`,
         remark: body.remark || '',

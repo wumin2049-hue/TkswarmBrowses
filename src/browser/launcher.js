@@ -43,25 +43,30 @@ function fetchJson(url) {
 
 async function waitForDevtools(port, timeoutMs = 30000) {
   const start = Date.now();
+  // 自适应轮询：冷启动前几百毫秒最关键，先密后疏，比固定 250ms 快 100~200ms
+  let delay = 40;
   while (Date.now() - start < timeoutMs) {
     try {
       const ver = await fetchJson(`http://127.0.0.1:${port}/json/version`);
       if (ver?.webSocketDebuggerUrl) return ver;
     } catch { /* retry */ }
-    await new Promise((r) => setTimeout(r, 250));
+    await new Promise((r) => setTimeout(r, delay));
+    delay = Math.min(200, Math.round(delay * 1.5));
   }
   throw new Error('Chrome 调试端口启动超时');
 }
 
 async function waitForPageTarget(port, timeoutMs = 15000) {
   const start = Date.now();
+  let delay = 30;
   while (Date.now() - start < timeoutMs) {
     try {
       const list = await fetchJson(`http://127.0.0.1:${port}/json/list`);
       const page = Array.isArray(list) && list.find((t) => t.type === 'page' && t.webSocketDebuggerUrl);
       if (page) return page;
     } catch { /* retry */ }
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, delay));
+    delay = Math.min(150, Math.round(delay * 1.5));
   }
   return null;
 }
@@ -170,24 +175,29 @@ async function launchProfile(profile, options = {}) {
   const ws = ver.webSocketDebuggerUrl;
   const httpUrl = `http://127.0.0.1:${port}`;
 
-  // 等首个 page 就绪后再注入（二次 open 时尤为重要）
-  await waitForPageTarget(port, 15000);
+  // 窗口已经起来之后的「就绪后处理」：等首个 page + 指纹注入 + 时区/语言/定位模拟。
+  // fastOpen（界面点「打开环境」）不等这些步骤，先返回让调用方立刻拿到结果，
+  // 后续真正要跑自动化的 open 会 await 同一份 warmup，语义不变。
+  const warmup = async () => {
+    // 等首个 page 就绪后再注入（二次 open 时尤为重要）
+    await waitForPageTarget(port, 6000);
 
-  // Canvas / WebGL / WebRTC 深度指纹：CDP 注入（失败则短重试）
-  const injectSrc = buildInjectScript(profile.id, {
-    ...fp,
-    languages: locale,
-    os: fp.os,
-  });
-  let injected = false;
-  for (let i = 0; i < 3 && !injected; i += 1) {
-    const r = await injectFingerprintOnNewDocument(port, injectSrc).catch(() => null);
-    injected = Boolean(r?.ok);
-    if (!injected) await new Promise((r) => setTimeout(r, 300));
-  }
-  await applyEmulation(port, { timezone, locale, latitude, longitude }).catch(() => null);
+    // Canvas / WebGL / WebRTC 深度指纹：CDP 注入（失败则短重试）
+    const injectSrc = buildInjectScript(profile.id, {
+      ...fp,
+      languages: locale,
+      os: fp.os,
+    });
+    let injected = false;
+    for (let i = 0; i < 3 && !injected; i += 1) {
+      const r = await injectFingerprintOnNewDocument(port, injectSrc).catch(() => null);
+      injected = Boolean(r?.ok);
+      if (!injected) await new Promise((r) => setTimeout(r, 200));
+    }
+    await applyEmulation(port, { timezone, locale, latitude, longitude }).catch(() => null);
+  };
 
-  return {
+  const base = {
     pid: child.pid,
     port,
     ws,
@@ -201,6 +211,12 @@ async function launchProfile(profile, options = {}) {
     releaseProxy: proxy.release || (() => {}),
     localProxyPort: proxy.localPort || 0,
   };
+
+  if (options.fastOpen) {
+    return { ...base, warmup: warmup().catch(() => {}) };
+  }
+  await warmup();
+  return base;
 }
 
 function killProcess(proc) {

@@ -296,6 +296,20 @@ function getCurrentUser() {
   });
 }
 
+/** 全部已知登录用户（A/B 交替登录时都在数组里，按最近登录排序） */
+function listUsers() {
+  return readOnly((d) => [...(d.users || [])].sort(
+    (a, b) => String(b.logged_in_at).localeCompare(String(a.logged_in_at))
+  ));
+}
+
+/** 本机仍保留的全部会话 Token（最近 8 个），中心 API 鉴权兜底用 */
+function listSessionTokens() {
+  return readOnly((d) => (Array.isArray(d.sessions) ? d.sessions : [])
+    .map((s) => String(s && s.token ? s.token : '').trim())
+    .filter(Boolean));
+}
+
 function statsForOwner(ownerId) {
   const used = countProfilesByOwner(ownerId);
   return { ownerId, used, limit: MAX_ENVS_PER_USER, remaining: Math.max(0, MAX_ENVS_PER_USER - used) };
@@ -369,6 +383,8 @@ module.exports = {
   setProfileStatus,
   saveUser,
   getCurrentUser,
+  listUsers,
+  listSessionTokens,
   statsForOwner,
   statsAllOwners,
   countProfilesByOwner,
