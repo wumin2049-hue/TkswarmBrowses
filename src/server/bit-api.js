@@ -8,6 +8,8 @@ const { DATA_ROOT } = require('../config');
 const { probeExitIp } = require('../browser/exit-ip');
 const { lookupGeoByIp, applyIpCreateFields } = require('../browser/geo-from-ip');
 const { clearProfileCache, removeProfileDir } = require('../browser/profile-cleanup');
+const { exportProfilePack, importProfilePack } = require('../browser/profile-backup');
+const fs = require('node:fs');
 
 function ok(data) {
   return { success: true, code: 0, data };
@@ -431,6 +433,70 @@ function createRouter() {
       res.json(ok(toBitProfile(updated)));
     } catch (e) {
       res.json(fail(e.message || '更新失败'));
+    }
+  });
+
+  /** 导出环境包（同机 Node 读 filePath 上传中心库） */
+  router.post('/browser/export', authMiddleware, async (req, res) => {
+    try {
+      const id = String(req.body?.id || '');
+      const row = db.getProfile(id);
+      const gate = assertProfileOwner(req.currentUser, row, { write: true });
+      if (!gate.ok) return res.json(fail(gate.msg));
+      if (manager.getSession(id)) {
+        await manager.closeProfile(id).catch(() => {});
+      }
+      const pack = exportProfilePack(id, { closeFirst: true });
+      res.json(ok({
+        id,
+        filePath: pack.filePath,
+        fileName: pack.fileName,
+        bytes: pack.bytes,
+        kind: pack.kind,
+      }));
+    } catch (e) {
+      res.json(fail(e.message || '导出失败'));
+    }
+  });
+
+  /**
+   * 导入环境包：keepId=true 时强制同 ID；本地已存在则关窗后覆盖 meta+userdata。
+   * body.filePath = 本机包路径；body.id = 预期环境 ID（用于先关窗）。
+   */
+  router.post('/browser/import', authMiddleware, async (req, res) => {
+    try {
+      const user = req.currentUser;
+      const filePath = String(req.body?.filePath || req.body?.path || '').trim();
+      const hintId = String(req.body?.id || '').trim();
+      const keepId = req.body?.keepId !== false && req.body?.keepId !== 0 && req.body?.keepId !== '0';
+      const forceOverwrite = req.body?.forceOverwrite !== false;
+
+      if (!filePath || !fs.existsSync(filePath)) {
+        return res.json(fail('缺少有效的 filePath（环境包路径）'));
+      }
+
+      const closeId = hintId || '';
+      if (closeId && manager.getSession(closeId)) {
+        await manager.closeProfile(closeId).catch(() => {});
+      }
+
+      const result = importProfilePack(filePath, {
+        ownerId: Number(user.id || 0) || 1,
+        keepId,
+        forceOverwrite,
+      });
+      const importedId = String(result.profile?.id || '');
+      if (importedId && importedId !== closeId && manager.getSession(importedId)) {
+        await manager.closeProfile(importedId).catch(() => {});
+      }
+      res.json(ok({
+        id: result.profile?.id,
+        profile: toBitProfile(result.profile),
+        sourceId: result.sourceId,
+        overwritten: result.overwritten,
+      }));
+    } catch (e) {
+      res.json(fail(e.message || '导入失败'));
     }
   });
 
