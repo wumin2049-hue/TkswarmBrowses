@@ -37,16 +37,9 @@ async function login({ apiBase, username, password, captcha, captchaKey }) {
   if (token) {
     db.setApiToken(token);
     writeSettings({ apiToken: token, apiBase: base });
-    // 与 Node 共用 PHP 登录 Token，写入用户设置后 Node 无需再手动复制
-    fetch(`${base}/settings`, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ tkswarmBrowserApiToken: token }),
-    }).catch(() => {});
+    // 不再把登录 Token 写入 PHP 的 tkswarmBrowserApiToken：
+    // A/B 交替登录会互相覆盖，Node 带着「错的 Bearer」打本机 API，环境共用失败。
+    // Node 调自研浏览器时留空 Token 即可（本机有人登录即放行）。
   }
   return { token, user: db.getCurrentUser() };
 }
