@@ -6,8 +6,11 @@ on:
       - 'v*'
   workflow_dispatch:
 
+# 显式声明权限时，未列出的项默认为 none。
+# gh run download / download-artifact 需要 actions:read，否则会 HTTP 403。
 permissions:
   contents: write
+  actions: read
 
 env:
   CSC_IDENTITY_AUTO_DISCOVERY: 'false'
@@ -83,8 +86,15 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      # download-artifact 偶发 ECONNRESET；用 gh run download + 重试更稳
-      - name: Download build artifacts (retry)
+      # 优先官方 download-artifact；失败再 gh run download 重试（需 actions:read）
+      - name: Download build artifacts
+        id: dl
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Download build artifacts (gh retry)
+        if: steps.dl.outcome != 'success'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -92,17 +102,25 @@ jobs:
           mkdir -p artifacts
           for attempt in 1 2 3 4 5; do
             echo "Download attempt ${attempt}/5 ..."
-            if gh run download "${{ github.run_id }}" -D artifacts; then
+            if gh run download "${{ github.run_id }}" -D artifacts \
+              -n TkSwarmBrowser-Windows \
+              -n TkSwarmBrowser-macOS; then
               echo "Artifacts downloaded."
               ls -laR artifacts || true
               exit 0
             fi
             wait=$((attempt * 15))
-            echo "Download failed (often ECONNRESET), retry in ${wait}s ..."
+            echo "Download failed, retry in ${wait}s ..."
             sleep "$wait"
           done
           echo "All download attempts failed." >&2
           exit 1
+      - name: Verify downloaded artifacts
+        run: |
+          set -euo pipefail
+          ls -laR artifacts || true
+          test -n "$(ls artifacts/TkSwarmBrowser-Windows/* 2>/dev/null)" || (echo "Windows artifacts missing" >&2; exit 1)
+          test -n "$(ls artifacts/TkSwarmBrowser-macOS/* 2>/dev/null)" || (echo "macOS artifacts missing" >&2; exit 1)
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}

@@ -7,8 +7,9 @@
   <link rel="icon" type="image/png" href="assets/app-icon.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css" />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css?v=3.1" />
+  <link rel="stylesheet" href="theme-premium.css?v=2.0" />
 </head>
 <body>
   <div class="bg-decor" aria-hidden="true">
@@ -47,8 +48,8 @@
             <img src="assets/logo.svg" class="hero-logo" width="88" height="88" alt="" />
             <div class="hero-rings"></div>
           </div>
-          <h2 class="hero-title">TkSwarm 指纹浏览器控制台</h2>
-          <p class="hero-desc">自研 Electron 内核 · 多环境隔离 · 本地比特兼容 API · 与 Node 一键联动</p>
+          <h2 class="hero-title">指纹浏览器控制台</h2>
+          <p class="hero-desc">本机环境管理、代理与指纹隔离、比特兼容本地 API，对接 Node 自动化。</p>
           <ul class="feature-list">
             <li>
               <span class="feature-icon fi-shield"></span>
@@ -67,11 +68,11 @@
         <div class="login-card login-card-premium">
           <div class="login-card-badge">
             <img src="assets/logo.svg" width="36" height="36" alt="" />
-            <span>TkSwarm 矩阵运营</span>
+            <span>TkSwarm Browse</span>
           </div>
           <p class="login-eyebrow">管理员登录</p>
           <h3 class="login-heading">进入控制台</h3>
-          <p class="hint">使用与 <a class="inline-link" href="http://tkswarm-api.dyyweb.com/" target="_blank" rel="noopener">TkSwarm Node</a> 相同的管理员账号，云端 API 已自动配置。</p>
+          <p class="hint">使用与 <a class="inline-link" href="http://tkswarm-api.dyyweb.com/" target="_blank" rel="noopener">TkSwarm</a> 相同的管理员账号登录。</p>
           <form id="login-form" class="login-form" autocomplete="on">
             <input id="api-base" type="hidden" value="http://tkswarm-api.dyyweb.com/api" />
             <label class="field">
@@ -182,45 +183,45 @@
 
         <section class="showcase-strip anim-fade">
           <div class="showcase-copy">
-            <p class="showcase-eyebrow">TkSwarm 矩阵运营工作台</p>
-            <h3>账号矩阵 · 指纹环境 · 智能发布</h3>
-            <p>与 Node 联动，环境隔离、代理校验、CDP 自动化一站完成。</p>
-            <a class="btn primary showcase-btn" href="http://tkswarm-api.dyyweb.com/" target="_blank" rel="noopener">访问官网 ↗</a>
+            <p class="showcase-eyebrow">工作区</p>
+            <h3>环境 · 代理 · 本地 API</h3>
+            <p>管理本机指纹环境，校验代理连通，对接 Node CDP 自动化。</p>
+            <a class="btn primary showcase-btn" href="http://tkswarm-api.dyyweb.com/" target="_blank" rel="noopener">打开管理端</a>
           </div>
           <div class="showcase-cards">
-            <article><span>🛡️</span><strong>环境隔离</strong><small>独立指纹与代理</small></article>
-            <article><span>🤖</span><strong>自动运营</strong><small>发布养号拓客</small></article>
-            <article><span>🔌</span><strong>比特兼容</strong><small>零改业务对接</small></article>
+            <article><span class="sc-ico sc-a" aria-hidden="true"></span><strong>环境隔离</strong><small>独立指纹与代理</small></article>
+            <article><span class="sc-ico sc-b" aria-hidden="true"></span><strong>本地 API</strong><small>比特协议兼容</small></article>
+            <article><span class="sc-ico sc-c" aria-hidden="true"></span><strong>CDP 对接</strong><small>Node 自动化</small></article>
           </div>
         </section>
 
         <div class="quick-grid anim-fade">
           <a class="quick-card" href="#" onclick="return false;" id="quick-node">
-            <span class="quick-icon qc-1">⚡</span>
+            <span class="quick-icon qc-1" aria-hidden="true"></span>
             <strong>本地 API</strong>
             <span class="muted">127.0.0.1:54345</span>
           </a>
           <a class="quick-card" href="#" onclick="return false;" id="quick-test">
-            <span class="quick-icon qc-2">🧪</span>
+            <span class="quick-icon qc-2" aria-hidden="true"></span>
             <strong>测试环境窗</strong>
-            <span class="muted">直连打开 TkSwarm 官网</span>
+            <span class="muted">打开测试页面</span>
           </a>
           <a class="quick-card" href="#" onclick="return false;" id="quick-refresh">
-            <span class="quick-icon qc-3">🔄</span>
+            <span class="quick-icon qc-3" aria-hidden="true"></span>
             <strong>同步状态</strong>
-            <span class="muted">刷新窗口与环境列表</span>
+            <span class="muted">刷新窗口与环境</span>
           </a>
           <a class="quick-card" href="#" onclick="return false;" id="quick-docs">
-            <span class="quick-icon qc-4">📋</span>
+            <span class="quick-icon qc-4" aria-hidden="true"></span>
             <strong>对接说明</strong>
-            <span class="muted">比特 API 完全兼容</span>
+            <span class="muted">比特 API 兼容</span>
           </a>
         </div>
 
         <div class="panel anim-fade">
           <div class="panel-head">
             <div class="panel-title-block">
-              <span class="panel-icon">🪟</span>
+              <span class="panel-icon pi-win" aria-hidden="true"></span>
               <div>
                 <h2>运行中的窗口</h2>
                 <p class="panel-desc">当前已打开的环境实例</p>
@@ -249,12 +250,19 @@
         <div class="panel anim-fade">
           <div class="panel-head">
             <div class="panel-title-block">
-              <span class="panel-icon">🗂️</span>
+              <span class="panel-icon pi-folder" aria-hidden="true"></span>
               <div>
                 <h2>环境档案</h2>
                 <p class="panel-desc">由 Node 账号页创建并绑定到本机</p>
               </div>
             </div>
+          </div>
+          <div class="panel-toolbar search-bar">
+            <label class="search-field">
+              <svg class="search-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+              <input id="profile-search" type="search" placeholder="搜索名称、分组、代理…" autocomplete="off" />
+            </label>
+            <span id="profile-count" class="toolbar-meta">0 条</span>
           </div>
           <div class="table-scroll">
             <table class="win-table">
@@ -276,7 +284,7 @@
         <div class="panel anim-fade children-panel" id="children-panel">
           <div class="panel-head">
             <div class="panel-title-block">
-              <span class="panel-icon">👥</span>
+              <span class="panel-icon pi-team" aria-hidden="true"></span>
               <div>
                 <h2>子级账号用量</h2>
                 <p class="panel-desc">团队环境配额汇总</p>
@@ -288,6 +296,7 @@
       </div>
     </section>
   </div>
-  <script src="app.js"></script>
+  <div id="toast-host" aria-live="polite" aria-relevant="additions"></div>
+  <script src="app.js?v=2.0"></script>
 </body>
 </html>

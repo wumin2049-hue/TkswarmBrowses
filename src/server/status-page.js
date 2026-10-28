@@ -35,23 +35,29 @@ function esc(s) {
 
 const STYLE = `
 :root{color-scheme:light}
-body{margin:0;padding:32px;font:14px/1.65 "Segoe UI","Microsoft YaHei",system-ui,sans-serif;color:#1d1310;
-     background:radial-gradient(900px 420px at 50% -10%,#ffd2a4a8,transparent 62%),#fdf7f0}
-.card{max-width:820px;margin:0 auto;background:#fff;border:1px solid #ecdac7;border-radius:16px;padding:26px 28px}
-h1{margin:0 0 4px;font-size:20px}
-h2{margin:26px 0 8px;font-size:15px;color:#8a6f5d}
-.sub{margin:0 0 20px;color:#6b564a}
+body{margin:0;padding:32px;font:14px/1.65 "Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;color:#0b1220;
+     background:radial-gradient(900px 420px at 50% -10%,rgba(37,99,235,.16),transparent 62%),#f3f6f9}
+.card{max-width:820px;margin:0 auto;background:#fff;border:1px solid #e4e9f0;border-radius:16px;padding:26px 28px;
+      box-shadow:0 1px 2px rgba(15,23,42,.04),0 12px 32px rgba(15,23,42,.06)}
+h1{margin:0 0 4px;font-size:20px;letter-spacing:-.02em}
+h2{margin:26px 0 8px;font-size:15px;color:#64748b;font-weight:650}
+.sub{margin:0 0 20px;color:#7b8799}
 table{width:100%;border-collapse:collapse;margin:10px 0}
-th,td{padding:7px 0;border-bottom:1px solid #f4e7d8;text-align:left;vertical-align:top;word-break:break-all}
-th{width:120px;color:#a1897a;font-weight:400}
-input[type=text]{width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #e3cdb8;border-radius:10px;font:13px/1.4 ui-monospace,Consolas,monospace}
-button{margin-top:12px;padding:10px 20px;border:0;border-radius:10px;background:#f7921e;color:#fff;font-size:14px;cursor:pointer}
-a{color:#c2610a}
-code{background:#f8ece0;border-radius:5px;padding:1px 6px}
-.ok{color:#1a7f37;font-weight:600}
-.bad{color:#c0392b;font-weight:600}
-.warn{color:#b4690e;font-weight:600}
-.tip{color:#6b564a;font-size:13px;margin:10px 0 0}
+th,td{padding:9px 0;border-bottom:1px solid #eef2f6;text-align:left;vertical-align:top;word-break:break-all}
+th{width:120px;color:#7b8799;font-weight:600;font-size:12px}
+input[type=text]{width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #e4e9f0;border-radius:10px;
+     font:13px/1.4 ui-monospace,Consolas,monospace;background:#f6f8fb;transition:border-color .15s,box-shadow .15s}
+input[type=text]:focus{outline:none;border-color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.18);background:#fff}
+button{margin-top:12px;padding:10px 20px;border:0;border-radius:10px;
+       background:linear-gradient(135deg,#3b82f6,#1d4ed8);color:#fff;font-size:14px;font-weight:600;cursor:pointer;
+       box-shadow:0 4px 14px rgba(37,99,235,.25)}
+button:hover{filter:brightness(1.04)}
+a{color:#1d4ed8;font-weight:600}
+code{background:#eff6ff;border:1px solid #dbeafe;border-radius:5px;padding:1px 6px;color:#1e3a8a}
+.ok{color:#15803d;font-weight:600}
+.bad{color:#e11d48;font-weight:600}
+.warn{color:#c2410c;font-weight:600}
+.tip{color:#7b8799;font-size:13px;margin:10px 0 0}
 `;
 
 function page(title, body) {

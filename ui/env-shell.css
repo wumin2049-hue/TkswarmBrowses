@@ -1,23 +1,68 @@
+/* ==========================================================================
+   TkSwarm Browse · Env Window Chrome
+   浅色精密工具栏 · 与控制台同源色板
+   ========================================================================== */
+
+:root {
+  --ink: #0b1220;
+  --ink-soft: #334155;
+  --muted: #7b8799;
+  --line: #e4e9f0;
+  --line-strong: #d0d7e2;
+  --surface: #ffffff;
+  --bar-top: #f8fafc;
+  --bar-bot: #eef2f6;
+  --accent: #2563eb;
+  --accent-deep: #1d4ed8;
+  --accent-soft: #eff6ff;
+  --accent-ring: rgba(37, 99, 235, 0.18);
+  --danger: #e11d48;
+  --danger-soft: #fff1f2;
+  --radius: 8px;
+  --font: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+}
+
 * { box-sizing: border-box; }
 
 html, body {
   margin: 0;
   height: 92px;
   overflow: hidden;
-  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
-  background: #e8eaed;
+  font-family: var(--font);
+  background: var(--bar-bot);
   user-select: none;
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
 }
 
 .chrome-bar {
   height: 92px;
   display: flex;
   flex-direction: column;
-  border-bottom: 1px solid #c5c9d0;
-  background: linear-gradient(180deg, #f4f5f7 0%, #e8eaed 100%);
+  border-bottom: 1px solid var(--line-strong);
+  background: linear-gradient(180deg, var(--bar-top) 0%, var(--bar-bot) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  position: relative;
 }
 
-.chrome-row { display: flex; align-items: center; gap: 4px; padding: 0 8px; }
+.chrome-bar::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  background: linear-gradient(90deg, #2563eb, #0891b2 40%, #4f46e5 75%, #059669);
+  opacity: 0.8;
+  pointer-events: none;
+}
+
+.chrome-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 10px;
+}
 
 .chrome-nav {
   height: 44px;
@@ -34,41 +79,64 @@ html, body {
   width: 32px;
   height: 32px;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--radius);
   background: transparent;
-  color: #3c4043;
+  color: var(--ink-soft);
   cursor: pointer;
   display: grid;
   place-items: center;
   flex-shrink: 0;
+  transition: background 0.15s ease, color 0.15s ease;
 }
 
-.nav-btn:hover:not(:disabled) { background: rgba(0, 0, 0, 0.06); }
-.nav-btn:disabled { opacity: 0.35; cursor: default; }
-.nav-btn svg { width: 18px; height: 18px; }
-.nav-close:hover { background: #fce8e6; color: #c5221f; }
+.nav-btn:hover:not(:disabled) {
+  background: rgba(37, 99, 235, 0.08);
+  color: var(--accent-deep);
+}
+
+.nav-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.nav-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+.nav-close:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
 
 .addr-form {
   flex: 1;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   min-width: 0;
   margin: 0 6px;
-  padding: 0 10px;
+  padding: 0 12px;
   height: 34px;
-  border-radius: 18px;
-  background: #fff;
-  border: 1px solid #dadce0;
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.04);
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.04);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .addr-form:focus-within {
-  border-color: #0d9488;
-  box-shadow: 0 0 0 2px rgba(13, 148, 136, 0.15);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
 }
 
-.addr-lock { font-size: 12px; opacity: 0.6; flex-shrink: 0; }
+.addr-lock {
+  font-size: 11px;
+  opacity: 0.55;
+  flex-shrink: 0;
+  width: 14px;
+  text-align: center;
+}
 
 #addr-input {
   flex: 1;
@@ -77,23 +145,32 @@ html, body {
   outline: none;
   font-size: 13px;
   background: transparent;
-  color: #202124;
+  color: var(--ink);
   user-select: text;
+  font-family: var(--font);
+}
+
+#addr-input::placeholder {
+  color: #a8b3c4;
 }
 
 .addr-go {
   border: none;
-  background: #0d9488;
+  background: linear-gradient(135deg, #3b82f6, var(--accent-deep));
   color: #fff;
   font-size: 12px;
-  font-weight: 600;
-  padding: 4px 10px;
-  border-radius: 12px;
+  font-weight: 650;
+  padding: 4px 12px;
+  border-radius: 999px;
   cursor: pointer;
   flex-shrink: 0;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.25);
+  transition: filter 0.15s ease;
 }
 
-.addr-go:hover { background: #0f766e; }
+.addr-go:hover {
+  filter: brightness(1.05);
+}
 
 .tab-strip {
   display: flex;
@@ -111,23 +188,29 @@ html, body {
   align-items: center;
   gap: 6px;
   max-width: 200px;
-  min-width: 80px;
+  min-width: 88px;
   height: 30px;
   padding: 0 8px 0 12px;
   border-radius: 8px 8px 0 0;
-  background: #d2d5da;
-  border: 1px solid #c5c9d0;
+  background: #e2e8f0;
+  border: 1px solid var(--line-strong);
   border-bottom: none;
   font-size: 12px;
-  color: #3c4043;
+  color: var(--ink-soft);
   cursor: pointer;
   flex-shrink: 0;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.tab-item:hover:not(.active) {
+  background: #edf2f7;
 }
 
 .tab-item.active {
-  background: #fff;
-  color: #202124;
-  font-weight: 600;
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 650;
+  box-shadow: 0 -1px 0 rgba(37, 99, 235, 0.35) inset;
 }
 
 .tab-title {
@@ -143,42 +226,52 @@ html, body {
   border: none;
   border-radius: 50%;
   background: transparent;
-  color: #5f6368;
+  color: var(--muted);
   cursor: pointer;
   font-size: 14px;
   line-height: 1;
   padding: 0;
+  transition: background 0.12s ease;
 }
 
-.tab-close:hover { background: rgba(0, 0, 0, 0.08); }
+.tab-close:hover {
+  background: rgba(15, 23, 42, 0.08);
+  color: var(--ink);
+}
 
 .tab-new {
   width: 28px;
   height: 28px;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--radius);
   background: transparent;
-  font-size: 20px;
-  color: #5f6368;
+  font-size: 18px;
+  color: var(--muted);
   cursor: pointer;
   flex-shrink: 0;
+  transition: background 0.15s ease, color 0.15s ease;
 }
 
-.tab-new:hover { background: rgba(0, 0, 0, 0.06); }
+.tab-new:hover {
+  background: rgba(37, 99, 235, 0.08);
+  color: var(--accent-deep);
+}
 
+/* —— History panel (dialog-like) —— */
 .history-panel {
   position: fixed;
   top: 44px;
-  right: 8px;
-  width: 320px;
-  max-height: 360px;
-  background: #fff;
-  border: 1px solid #dadce0;
-  border-radius: 12px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.15);
+  right: 10px;
+  width: 340px;
+  max-height: 380px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.14);
   z-index: 100;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .history-panel.hidden { display: none; }
@@ -187,26 +280,39 @@ html, body {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 12px;
-  border-bottom: 1px solid #eee;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
   font-size: 13px;
+  background: linear-gradient(180deg, #fafbfc, #fff);
 }
 
-.history-head strong { flex: 1; }
+.history-head strong {
+  flex: 1;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
 
 .link-btn {
   border: none;
   background: none;
-  color: #0d9488;
+  color: var(--accent-deep);
   font-size: 12px;
+  font-weight: 600;
   cursor: pointer;
-  padding: 2px 4px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  transition: background 0.12s ease;
+}
+
+.link-btn:hover {
+  background: var(--accent-soft);
 }
 
 .history-list {
   list-style: none;
   margin: 0;
-  padding: 6px;
+  padding: 8px;
   overflow-y: auto;
   flex: 1;
 }
@@ -216,18 +322,22 @@ html, body {
   text-align: left;
   border: none;
   background: transparent;
-  padding: 8px 10px;
-  border-radius: 8px;
+  padding: 9px 11px;
+  border-radius: 9px;
   cursor: pointer;
   font-size: 12px;
+  font-family: var(--font);
+  transition: background 0.12s ease;
 }
 
-.history-list li button:hover { background: #f1f3f4; }
+.history-list li button:hover {
+  background: var(--accent-soft);
+}
 
 .history-list .h-title {
   display: block;
-  font-weight: 600;
-  color: #202124;
+  font-weight: 650;
+  color: var(--ink);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -235,11 +345,12 @@ html, body {
 
 .history-list .h-url {
   display: block;
-  color: #5f6368;
+  color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   margin-top: 2px;
+  font-size: 11.5px;
 }
 
 .hidden { display: none !important; }

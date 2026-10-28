@@ -1,5 +1,8 @@
 const API = `http://127.0.0.1:${window.tkswarmBrowser?.apiPort || 54345}`;
 
+/** @type {Array<Record<string, unknown>>} */
+let cachedProfiles = [];
+
 async function json(method, path, body) {
   const res = await fetch(`${API}${path}`, {
     method,
@@ -21,6 +24,61 @@ async function bitListProfiles() {
 
 function show(el, on) {
   document.querySelector(el)?.classList.toggle('hidden', !on);
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
+/* —— Toast —— */
+function toast(message, type = 'info') {
+  const host = document.getElementById('toast-host');
+  if (!host) {
+    // fallback
+    // eslint-disable-next-line no-alert
+    alert(message);
+    return;
+  }
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.innerHTML = `<span class="toast-ico" aria-hidden="true"></span><span class="toast-msg">${esc(message)}</span>`;
+  host.appendChild(el);
+  setTimeout(() => {
+    el.style.opacity = '0';
+    el.style.transform = 'translateY(-6px)';
+    el.style.transition = 'opacity .2s ease, transform .2s ease';
+    setTimeout(() => el.remove(), 220);
+  }, 2800);
+}
+
+/* —— Confirm modal —— */
+function confirmDialog({ title = '确认操作', message = '', confirmText = '确定', danger = false } = {}) {
+  return new Promise((resolve) => {
+    const mask = document.createElement('div');
+    mask.className = 'modal-mask';
+    mask.innerHTML = `
+      <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-head"><h3>${esc(title)}</h3></div>
+        <div class="modal-body">${esc(message)}</div>
+        <div class="modal-foot">
+          <button type="button" class="btn ghost" data-act="cancel">取消</button>
+          <button type="button" class="btn ${danger ? 'danger' : 'primary'}" data-act="ok">${esc(confirmText)}</button>
+        </div>
+      </div>`;
+    const close = (v) => {
+      mask.remove();
+      resolve(v);
+    };
+    mask.addEventListener('click', (e) => {
+      if (e.target === mask) close(false);
+    });
+    mask.querySelector('[data-act="cancel"]').onclick = () => close(false);
+    mask.querySelector('[data-act="ok"]').onclick = () => close(true);
+    document.body.appendChild(mask);
+    mask.querySelector('[data-act="ok"]').focus();
+  });
 }
 
 function emptyRow(colspan, title, detail) {
@@ -53,6 +111,61 @@ function renderSystemPills(sys) {
   ).join('');
 }
 
+function proxyTag(p) {
+  const type = String(p.proxyType || 'noproxy').toLowerCase();
+  if (type === 'noproxy' || !type) {
+    return '<span class="tag noproxy">直连</span>';
+  }
+  const host = [p.host, p.port].filter(Boolean).join(':');
+  return `<span class="tag proxy">${esc(type)}</span>${host ? ` <span class="muted">${esc(host)}</span>` : ''}${
+    p.lastIp ? `<div class="cell-sub">IP ${esc(p.lastIp)}</div>` : ''
+  }`;
+}
+
+function renderProfileRows(list) {
+  const body = document.getElementById('profile-body');
+  const countEl = document.getElementById('profile-count');
+  if (countEl) countEl.textContent = `${list.length} 条`;
+  if (!body) return;
+  if (!list.length) {
+    const q = document.getElementById('profile-search')?.value?.trim();
+    body.innerHTML = emptyRow(
+      6,
+      q ? '无匹配结果' : '暂无环境',
+      q ? '尝试其他关键词' : '请在 Node 账号页创建并绑定'
+    );
+    return;
+  }
+  body.innerHTML = list.map((p) => {
+    const running = p.status === 1 || p.status === 2;
+    const group = p.groupId || 'default';
+    return `
+      <tr>
+        <td><code>${esc(String(p.id).slice(0, 12))}…</code></td>
+        <td>${esc(p.name)}${p.remark ? `<div class="cell-sub">${esc(p.remark)}</div>` : ''}</td>
+        <td><span class="tag group">${esc(group)}</span></td>
+        <td>${proxyTag(p)}</td>
+        <td>${esc(p.timezone || '—')}</td>
+        <td><span class="status-dot ${running ? 'running' : 'idle'}">${running ? '运行中' : '空闲'}</span></td>
+      </tr>`;
+  }).join('');
+}
+
+function filterProfiles() {
+  const q = (document.getElementById('profile-search')?.value || '').trim().toLowerCase();
+  if (!q) {
+    renderProfileRows(cachedProfiles);
+    return;
+  }
+  const filtered = cachedProfiles.filter((p) => {
+    const blob = [
+      p.id, p.name, p.remark, p.groupId, p.proxyType, p.host, p.port, p.timezone, p.lastIp,
+    ].map((x) => String(x ?? '').toLowerCase()).join(' ');
+    return blob.includes(q);
+  });
+  renderProfileRows(filtered);
+}
+
 async function openTestEnvWindow(triggerBtn) {
   const targets = [triggerBtn, document.getElementById('btn-test-env'), document.getElementById('btn-test-env-hero')]
     .filter(Boolean);
@@ -60,12 +173,13 @@ async function openTestEnvWindow(triggerBtn) {
   try {
     const pack = await json('POST', '/api/test/open-env-window');
     if (!pack.ok) {
-      alert(pack.message || '测试环境窗打开失败');
+      toast(pack.message || '测试环境窗打开失败', 'err');
     } else {
+      toast('测试环境窗已打开', 'ok');
       await refreshDashboard();
     }
   } catch (error) {
-    alert(error?.message || '请求失败');
+    toast(error?.message || '请求失败', 'err');
   } finally {
     targets.forEach((btn) => { btn.disabled = false; });
   }
@@ -123,11 +237,11 @@ async function refreshDashboard() {
         <td><code>${esc(w.profileId.slice(0, 10))}…</code></td>
         <td>${esc(w.name)}</td>
         <td><span class="tag ${w.headless ? 'headless' : 'visible'}">${w.headless ? '无头' : '有头'}</span></td>
-        <td>${w.pid || '—'}</td>
+        <td><code>${w.pid || '—'}</code></td>
         <td>
           <div class="row-actions">
-            ${w.headless ? `<button class="btn small primary btn-show" type="button" data-id="${esc(w.profileId)}">显示窗口</button>` : ''}
-            <button class="btn small ghost btn-close" type="button" data-id="${esc(w.profileId)}">关闭</button>
+            ${w.headless ? `<button class="btn small primary btn-show" type="button" data-id="${esc(w.profileId)}">显示</button>` : ''}
+            <button class="btn small danger btn-close" type="button" data-id="${esc(w.profileId)}">关闭</button>
           </div>
         </td>
       </tr>
@@ -141,41 +255,29 @@ async function refreshDashboard() {
   }
 
   const profiles = await bitListProfiles();
+  cachedProfiles = profiles;
   const statProfiles = document.getElementById('stat-profiles');
   if (statProfiles) statProfiles.textContent = String(profiles.length);
-  const profileBody = document.getElementById('profile-body');
-  if (!profiles.length) {
-    profileBody.innerHTML = emptyRow(6, '暂无环境', '请在 Node 账号页创建并绑定');
-  } else {
-    profileBody.innerHTML = profiles.map((p) => {
-      const running = p.status === 1 || p.status === 2;
-      return `
-      <tr>
-        <td><code>${esc(String(p.id).slice(0, 12))}…</code></td>
-        <td>${esc(p.name)}${p.remark ? `<div class="cell-sub">${esc(p.remark)}</div>` : ''}</td>
-        <td>${esc(p.groupId || 'default')}</td>
-        <td>${esc(p.proxyType || 'noproxy')} ${esc(p.host || '')}${p.port ? ':' + p.port : ''}${p.lastIp ? `<div class="cell-sub">IP ${esc(p.lastIp)}</div>` : ''}</td>
-        <td>${esc(p.timezone || '—')}</td>
-        <td><span class="status-dot ${running ? 'running' : 'idle'}">${running ? '运行中' : '空闲'}</span></td>
-      </tr>`;
-    }).join('');
-  }
+  filterProfiles();
 }
 
 async function showWindow(id) {
   await json('POST', `/api/windows/${encodeURIComponent(id)}/show`);
+  toast('已切换为可见窗口', 'ok');
   await refreshDashboard();
 }
 
 async function closeWindow(id) {
+  const ok = await confirmDialog({
+    title: '关闭环境窗口',
+    message: '确认关闭该运行中的环境窗口？未保存的页面状态可能丢失。',
+    confirmText: '关闭窗口',
+    danger: true,
+  });
+  if (!ok) return;
   await json('POST', `/api/windows/${encodeURIComponent(id)}/close`);
+  toast('窗口已关闭', 'ok');
   await refreshDashboard();
-}
-
-function esc(s) {
-  return String(s ?? '').replace(/[&<>"']/g, (c) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  }[c]));
 }
 
 async function doLogin(e) {
@@ -194,6 +296,7 @@ async function doLogin(e) {
   }
   show('#login-panel', false);
   show('#dashboard', true);
+  toast('登录成功', 'ok');
   await refreshDashboard();
 }
 
@@ -222,6 +325,8 @@ async function init() {
   document.getElementById('login-form').addEventListener('submit', doLogin);
   document.getElementById('btn-login').onclick = doLogin;
 
+  document.getElementById('profile-search')?.addEventListener('input', filterProfiles);
+
   document.getElementById('btn-logout').onclick = async () => {
     await json('POST', '/api/auth/logout');
     show('#dashboard', false);
@@ -229,16 +334,24 @@ async function init() {
     show('#user-chip', false);
     show('#btn-logout', false);
     show('#btn-test-env', false);
+    toast('已退出登录', 'info');
   };
   document.getElementById('btn-test-env').onclick = () => openTestEnvWindow(document.getElementById('btn-test-env'));
   document.getElementById('btn-test-env-hero')?.addEventListener('click', () =>
     openTestEnvWindow(document.getElementById('btn-test-env-hero'))
   );
-  document.getElementById('btn-refresh').onclick = () => refreshDashboard();
-  document.getElementById('btn-refresh-hero')?.addEventListener('click', () => refreshDashboard());
-  document.getElementById('quick-refresh')?.addEventListener('click', (e) => {
+  document.getElementById('btn-refresh').onclick = async () => {
+    await refreshDashboard();
+    toast('数据已刷新', 'ok');
+  };
+  document.getElementById('btn-refresh-hero')?.addEventListener('click', async () => {
+    await refreshDashboard();
+    toast('数据已刷新', 'ok');
+  });
+  document.getElementById('quick-refresh')?.addEventListener('click', async (e) => {
     e.preventDefault();
-    refreshDashboard();
+    await refreshDashboard();
+    toast('状态已同步', 'ok');
   });
   document.getElementById('quick-test')?.addEventListener('click', (e) => {
     e.preventDefault();
@@ -246,7 +359,7 @@ async function init() {
   });
   document.getElementById('quick-node')?.addEventListener('click', (e) => {
     e.preventDefault();
-    navigator.clipboard.writeText(API).then(() => alert('已复制本地 API 地址'));
+    navigator.clipboard.writeText(API).then(() => toast('已复制本地 API 地址', 'ok'));
   });
   document.getElementById('quick-docs')?.addEventListener('click', (e) => {
     e.preventDefault();
@@ -254,15 +367,20 @@ async function init() {
   });
   document.getElementById('btn-copy-token').onclick = async () => {
     const t = document.getElementById('api-token').textContent.trim();
-    if (!t || t === '—') return;
+    if (!t || t === '—') {
+      toast('暂无 Token 可复制', 'err');
+      return;
+    }
     await navigator.clipboard.writeText(t);
     const btn = document.getElementById('btn-copy-token');
+    const prev = btn.textContent;
     btn.textContent = '已复制';
-    setTimeout(() => { btn.textContent = '复制 Token'; }, 1500);
+    toast('Token 已复制', 'ok');
+    setTimeout(() => { btn.textContent = prev; }, 1500);
   };
   window.tkswarmBrowser?.onWindowsUpdated?.(() => refreshDashboard());
   window.tkswarmBrowser?.onTestEnvError?.((msg) => {
-    alert(`测试环境窗打开失败：${msg}`);
+    toast(`测试环境窗打开失败：${msg}`, 'err');
   });
   setInterval(() => refreshDashboard(), 8000);
 }
