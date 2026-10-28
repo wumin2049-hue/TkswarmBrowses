@@ -6,8 +6,6 @@ on:
       - 'v*'
   workflow_dispatch:
 
-# 显式声明权限时，未列出的项默认为 none。
-# gh run download / download-artifact 需要 actions:read，否则会 HTTP 403。
 permissions:
   contents: write
   actions: read
@@ -39,15 +37,46 @@ jobs:
           $portable = Get-ChildItem dist -Filter "*-portable.exe" -ErrorAction SilentlyContinue
           if (-not $setup) { throw "NSIS setup EXE missing" }
           if (-not $portable) { throw "Portable EXE missing — check package.json win.target includes portable" }
-      - name: Upload Windows artifact
+
+      # 手动跑：可选上传 Artifact（配额满不阻断）
+      - name: Upload Windows artifact (CI only)
+        if: github.ref_type != 'tag'
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: TkSwarmBrowser-Windows
-          retention-days: 7
-          if-no-files-found: error
+          retention-days: 3
+          if-no-files-found: warn
           path: |
             dist/*-setup.exe
             dist/*-portable.exe
+
+      # tag 发版：直传 GitHub Release（不占 Artifact 配额）
+      - name: Attach Windows to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*-setup.exe
+            dist/*-portable.exe
+          fail_on_unmatched_files: false
+          generate_release_notes: true
+          draft: false
+          body: |
+            ## 下载说明
+
+            ### Windows
+            - **TkSwarmBrowser-*-win-portable.exe** — 绿色免安装便携版（推荐），数据在 exe 同级 data/
+            - **TkSwarmBrowser-*-win-x64-setup.exe** — NSIS 安装版
+
+            ### macOS
+            - **TkSwarmBrowser-*-mac-arm64.dmg** — Apple Silicon (M 系列)
+            - **TkSwarmBrowser-*-mac-x64.dmg** — Intel Mac
+            - 对应 `.zip` 为解压即用
+
+            本地 API 默认 http://127.0.0.1:54345，与 tkswarm-node 比特接口兼容。
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build-mac:
     runs-on: macos-latest
@@ -69,92 +98,28 @@ jobs:
           ls -la dist/
           test -n "$(ls dist/*.dmg 2>/dev/null)" || (echo "DMG missing" && exit 1)
           test -n "$(ls dist/*.zip 2>/dev/null)" || (echo "ZIP missing" && exit 1)
-      - name: Upload macOS artifact
+
+      - name: Upload macOS artifact (CI only)
+        if: github.ref_type != 'tag'
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: TkSwarmBrowser-macOS
-          retention-days: 7
-          if-no-files-found: error
+          retention-days: 3
+          if-no-files-found: warn
           path: |
             dist/*.dmg
             dist/*.zip
 
-  release:
-    needs: [build-win, build-mac]
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      # 优先官方 download-artifact；失败再 gh run download 重试（需 actions:read）
-      - name: Download build artifacts
-        id: dl
-        continue-on-error: true
-        uses: actions/download-artifact@v4
+      - name: Attach macOS to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
         with:
-          path: artifacts
-      - name: Download build artifacts (gh retry)
-        if: steps.dl.outcome != 'success'
+          files: |
+            dist/*.dmg
+            dist/*.zip
+          fail_on_unmatched_files: false
+          generate_release_notes: true
+          draft: false
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          mkdir -p artifacts
-          for attempt in 1 2 3 4 5; do
-            echo "Download attempt ${attempt}/5 ..."
-            if gh run download "${{ github.run_id }}" -D artifacts \
-              -n TkSwarmBrowser-Windows \
-              -n TkSwarmBrowser-macOS; then
-              echo "Artifacts downloaded."
-              ls -laR artifacts || true
-              exit 0
-            fi
-            wait=$((attempt * 15))
-            echo "Download failed, retry in ${wait}s ..."
-            sleep "$wait"
-          done
-          echo "All download attempts failed." >&2
-          exit 1
-      - name: Verify downloaded artifacts
-        run: |
-          set -euo pipefail
-          ls -laR artifacts || true
-          test -n "$(ls artifacts/TkSwarmBrowser-Windows/* 2>/dev/null)" || (echo "Windows artifacts missing" >&2; exit 1)
-          test -n "$(ls artifacts/TkSwarmBrowser-macOS/* 2>/dev/null)" || (echo "macOS artifacts missing" >&2; exit 1)
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          files=(artifacts/TkSwarmBrowser-Windows/* artifacts/TkSwarmBrowser-macOS/*)
-          if [ ${#files[@]} -eq 0 ]; then
-            echo "No release artifacts found" >&2
-            ls -laR artifacts || true
-            exit 1
-          fi
-          echo "Uploading ${#files[@]} file(s):"
-          printf ' - %s\n' "${files[@]}"
-
-          NOTES="## 下载说明
-
-          ### Windows
-          - **TkSwarmBrowser-*-win-portable.exe** — 绿色免安装便携版（推荐），数据在 exe 同级 data/
-          - **TkSwarmBrowser-*-win-x64-setup.exe** — NSIS 安装版
-
-          ### macOS
-          - **TkSwarmBrowser-*-mac-arm64.dmg** — Apple Silicon (M 系列)
-          - **TkSwarmBrowser-*-mac-x64.dmg** — Intel Mac
-          - 对应 \`.zip\` 为解压即用
-
-          本地 API 默认 http://127.0.0.1:54345，与 tkswarm-node 比特接口兼容。"
-
-          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            gh release upload "${GITHUB_REF_NAME}" "${files[@]}" --clobber
-            gh release edit "${GITHUB_REF_NAME}" --notes "$NOTES"
-          else
-            gh release create "${GITHUB_REF_NAME}" \
-              --title "第一页自研浏览器 ${GITHUB_REF_NAME}" \
-              --notes "$NOTES" \
-              "${files[@]}"
-          fi
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
