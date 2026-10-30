@@ -128,7 +128,7 @@ git push origin v1.0.0
 
 - **深度指纹**：打开环境时经 CDP 注入 Canvas / WebGL / Audio / Navigator 噪声（按环境 ID 稳定）
 - **账号代理（成熟方案）**：出网走账号绑定的 `proxies`，每环境独立，支持多代理。Chrome 不支持带账密 SOCKS5 直连时，自动在 `127.0.0.1` 起**无认证本地桥**再转发到该账号上游——这不是 Clash，延迟可忽略，也不串线。
-- **本机 Clash / 系统代理**：默认**不使用**。仅当 `systemProxyMode` 为 `auto`（直连失败回退）或 `system`（强制借道）时才会经系统代理。大陆机器直连海外住宅端口超时，可设 `"systemProxyMode": "auto"`。
+- **本机 Clash / V2Ray**：默认 `system`——打开环境与连账号代理均经系统代理。需本机已开翻墙且系统代理可被检测到。可改为 `"auto"` / `"direct"`。
 - **时区**：创建时写入 `timezone`；改代理后需重新打开窗口
 - 必须先 **桌面端登录**，Node 的 `browser/list` 才会成功（与比特「客户端已登录」行为一致）
 

@@ -11,19 +11,18 @@ const { execFile } = require('node:child_process');
 const { readSettings } = require('../settings');
 
 /** 代理桥实现版本（发版后对照 env 日志，避免误用旧 dist/ 或未下载的新 Release） */
-const PROXY_BRIDGE_REV = '13';
+const PROXY_BRIDGE_REV = '15';
 
 /* ------------------------------------------------------------------ *
- * 系统前置代理（Clash / v2ray）—— 默认不走，避免拖慢 / 破坏多代理隔离
+ * 系统前置代理（Clash / v2ray）—— 默认强制经本机翻墙再连账号代理
  *
- * 成熟指纹浏览器：浏览器只连「账号自己的代理」。本机 Clash 不是必需品。
- * 仅当直连海外住宅代理端口失败（ETIMEDOUT 等）时，才可选借道系统代理作回退
- * （大陆机器偶发需要）。强制借道会把所有账号挤进同一 Clash 节点，又慢又串线。
+ * 链路：浏览器 → 本地 SOCKS 桥 → 本机 V2Ray/Clash → 账号绑定上游代理 → TikTok
+ * 本机翻墙只负责「连得上上游」；出口 IP 仍是账号代理。
  *
  * 模式（优先级：环境变量 > settings.json systemProxyMode）：
- *   direct  —— 只直连账号代理（默认）
+ *   system  —— 优先经系统代理连上游（默认）
  *   auto    —— 先直连，失败再借道系统代理
- *   system  —— 优先经系统代理连上游（旧行为；需本机已开 Clash）
+ *   direct  —— 只直连账号代理，绝不经 Clash
  * TKSWARM_NO_SYSTEM_PROXY=1 等价 direct；TKSWARM_USE_SYSTEM_PROXY=1 等价 system。
  * ------------------------------------------------------------------ */
 
@@ -63,8 +62,8 @@ function resolveSystemProxyMode() {
     const raw = String(readSettings().systemProxyMode || '').trim().toLowerCase();
     if (raw === 'direct' || raw === 'auto' || raw === 'system') return raw;
   } catch { /* */ }
-  // 默认直连账号代理：多代理隔离 + 不吃本地 Clash 延迟
-  return 'direct';
+  // 默认 system：检测与打开环境均经本机 V2Ray/Clash 再连账号代理
+  return 'system';
 }
 
 function systemProxyDisabled() {
@@ -322,7 +321,7 @@ function pickUsableSystemProxy(sysProxy, targetHost, targetPort) {
 
 /**
  * 建立到「账号绑定上游代理」的原始套接字。
- * 默认直连（多代理隔离）；仅 system / auto 回退时才借道本机 Clash。
+ * 默认 auto：先直连，失败再借道本机 V2Ray/Clash；system 则优先借道。
  */
 async function openRawUpstream(host, port, timeoutMs = 15000) {
   const targetHost = String(host || '');

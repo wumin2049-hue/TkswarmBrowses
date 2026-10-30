@@ -43,7 +43,7 @@ router.get('/api/system/info', (req, res) => {
     envSoftwareRender: s.envSoftwareRender === true || s.envSoftwareRender === 'true',
     softwareRenderActive: Boolean(wantSoftwareRender()),
     softwareRenderReason: wantSoftwareRender() || '',
-    systemProxyMode: String(s.systemProxyMode || process.env.TKSWARM_SYSTEM_PROXY_MODE || 'direct'),
+    systemProxyMode: String(s.systemProxyMode || process.env.TKSWARM_SYSTEM_PROXY_MODE || 'system'),
     packagedPortable: isPackagedPortable(),
     packagedApp: isPackagedApp(),
     version: require('../../package.json').version,

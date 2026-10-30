@@ -72,7 +72,7 @@ function buildChildEnv(profileId, softwareRender) {
   const childEnv = { ...process.env };
   delete childEnv.ELECTRON_RUN_AS_NODE;
   childEnv.TKSWARM_ENV_SOFTWARE_RENDER = softwareRender ? '1' : '0';
-  // 住宅/高延迟代理默认：限并发 + 放宽超时（可用环境变量覆盖）
+  // 住宅/高延迟代理默认：限并发 + 放宽超时；大陆默认借道本机翻墙（可用环境变量覆盖）
   if (!String(childEnv.TKSWARM_PROXY_HANDSHAKE_LIMIT || '').trim()) {
     childEnv.TKSWARM_PROXY_HANDSHAKE_LIMIT = '4';
   }
@@ -90,6 +90,11 @@ function buildChildEnv(profileId, softwareRender) {
   }
   if (!String(childEnv.TKSWARM_PROXY_UPSTREAM_ATTEMPTS || '').trim()) {
     childEnv.TKSWARM_PROXY_UPSTREAM_ATTEMPTS = '4';
+  }
+  if (!String(childEnv.TKSWARM_SYSTEM_PROXY_MODE || '').trim()
+    && String(childEnv.TKSWARM_NO_SYSTEM_PROXY || '').trim() !== '1'
+    && String(childEnv.TKSWARM_USE_SYSTEM_PROXY || '').trim() !== '1') {
+    childEnv.TKSWARM_SYSTEM_PROXY_MODE = 'system';
   }
   return childEnv;
 }
