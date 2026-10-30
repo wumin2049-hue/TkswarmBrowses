@@ -82,7 +82,7 @@ async function probeProxySummary(meta, options = {}) {
   } else if (/拒绝|规则|不可达/.test(tiktok.message)) {
     parts.push('结论：代理侧拦了这个目标 → 换节点或换套餐');
   } else {
-    parts.push('结论：代理服务器本身连不上 → 检查 IP/端口/是否过期');
+    parts.push('结论：上游代理不可用或濒死（过期/并发打满/SOCKS 握手无响应）→ 换节点；勿与「无代理直连」混淆');
   }
   return parts.join('；');
 }

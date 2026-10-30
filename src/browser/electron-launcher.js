@@ -72,6 +72,13 @@ function buildChildEnv(profileId, softwareRender) {
   const childEnv = { ...process.env };
   delete childEnv.ELECTRON_RUN_AS_NODE;
   childEnv.TKSWARM_ENV_SOFTWARE_RENDER = softwareRender ? '1' : '0';
+  // 住宅代理默认压低并发（可用环境变量覆盖）；避免首屏几十路 CONNECT 把节点打挂
+  if (!String(childEnv.TKSWARM_PROXY_HANDSHAKE_LIMIT || '').trim()) {
+    childEnv.TKSWARM_PROXY_HANDSHAKE_LIMIT = '3';
+  }
+  if (!String(childEnv.TKSWARM_PROXY_MAX_TUNNELS || '').trim()) {
+    childEnv.TKSWARM_PROXY_MAX_TUNNELS = '8';
+  }
   return childEnv;
 }
 

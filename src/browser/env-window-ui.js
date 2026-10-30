@@ -63,9 +63,9 @@ function buildDiagnosticHtml(profileId, opts = {}) {
   <p class="sub">下面是诊断信息。请确认已使用最新客户端（v1.0.13+）。</p>
   <table>${rows}</table>
   <ol class="tips">
-    <li>先看上面「代理自检」：<b>TikTok 不通 + 中性站通</b> = 代理封了 TikTok 出口（换支持 TikTok 的节点）；<b>两个都不通</b> = 代理服务器本身连不上（过期 / IP 被封 / 端口错）；<b>提示认证被拒</b> = 代理账密填错。</li>
-    <li>若错误含 <code>ERR_SOCKS_CONNECTION_FAILED</code>：常见是<b>代理套餐并发太低</b>（日志里 5 条同时超时即典型）。看日志「并发探测 x/6」；可设环境变量 <code>TKSWARM_PROXY_MAX_TUNNELS=5</code> 与套餐一致，或换更高并发节点。</li>
-    <li>检查账号代理是否可用，或临时改为直连测试。</li>
+    <li>先看上面「代理自检」：<b>TikTok 不通 + 中性站通</b> = 代理封了 TikTok 出口（换支持 TikTok 的节点）；<b>两个都不通</b> = 上游代理挂了/过期/并发打满（本机 TCP 偶发能通但 SOCKS 握手仍超时也算这类）；<b>提示认证被拒</b> = 代理账密填错。</li>
+    <li>日志里的「直连账号绑定代理」<b>不是无代理</b>：仍走账号绑定的 SOCKS/HTTP，只是不经本机 Clash。真·无代理测试：在后台把该账号代理解绑或改为 noproxy，再重开环境。</li>
+    <li>若错误含 <code>ERR_SOCKS_CONNECTION_FAILED</code>：常见是<b>住宅代理并发太低</b>（首屏会开多路隧道）。可设 <code>TKSWARM_PROXY_HANDSHAKE_LIMIT=2</code>、<code>TKSWARM_PROXY_MAX_TUNNELS=5</code> 后重启客户端，或换更高并发节点。</li>
     <li>完全退出客户端后重开（托盘也要退出）。</li>
     <li>把 <code>data/logs/env-${escHtml(profileId)}.log</code> 发给技术支持。</li>
   </ol>

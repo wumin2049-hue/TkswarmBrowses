@@ -11,7 +11,7 @@ const { execFile } = require('node:child_process');
 const { readSettings } = require('../settings');
 
 /** 代理桥实现版本（发版后对照 env 日志，避免误用旧 dist/ 或未下载的新 Release） */
-const PROXY_BRIDGE_REV = '11';
+const PROXY_BRIDGE_REV = '12';
 
 /* ------------------------------------------------------------------ *
  * 系统前置代理（Clash / v2ray）—— 默认不走，避免拖慢 / 破坏多代理隔离
@@ -371,8 +371,9 @@ const bridges = new Map();
  * ------------------------------------------------------------------ */
 
 function readHandshakeLimit() {
-  const raw = Number(process.env.TKSWARM_PROXY_HANDSHAKE_LIMIT || 8);
-  if (!Number.isFinite(raw) || raw < 1) return 8;
+  // 住宅 SOCKS 常见并发 1～5；默认 8/64 会把濒死节点打成「TCP/握手全超时」
+  const raw = Number(process.env.TKSWARM_PROXY_HANDSHAKE_LIMIT || 3);
+  if (!Number.isFinite(raw) || raw < 1) return 3;
   return Math.min(Math.floor(raw), 32);
 }
 const HANDSHAKE_LIMIT = readHandshakeLimit();
@@ -383,7 +384,7 @@ const HANDSHAKE_QUEUE_TIMEOUT_MS = Math.max(
 /** 软上限：只用于日志观察，不阻塞连接 */
 const MAX_ACTIVE_TUNNELS = Math.max(
   HANDSHAKE_LIMIT,
-  Math.min(Number(process.env.TKSWARM_PROXY_MAX_TUNNELS || 64) || 64, 256),
+  Math.min(Number(process.env.TKSWARM_PROXY_MAX_TUNNELS || 8) || 8, 256),
 );
 
 let activeHandshakes = 0;
@@ -960,13 +961,13 @@ async function describeUpstreamRoute() {
   const mode = resolveSystemProxyMode();
   const sysProxy = mode === 'direct' ? null : await detectSystemProxy();
   if (mode === 'direct') {
-    return '直连账号绑定代理（默认；不经本机 Clash/系统代理）';
+    return '走账号绑定代理（直连上游，不经 Clash；≠无代理）';
   }
   if (mode === 'auto') {
-    if (!sysProxy) return '优先直连账号代理；失败时可回退系统前置代理（当前未检测到）';
-    return `优先直连账号代理；失败回退 ${sysProxy.type}://${sysProxy.host}:${sysProxy.port}`;
+    if (!sysProxy) return '优先走账号代理；失败时可回退系统前置代理（当前未检测到）';
+    return `优先走账号代理；失败回退 ${sysProxy.type}://${sysProxy.host}:${sysProxy.port}`;
   }
-  if (!sysProxy) return '模式=system，但未检测到系统前置代理 → 将直连账号代理';
+  if (!sysProxy) return '模式=system，但未检测到系统前置代理 → 仍走账号代理';
   return `经系统前置代理 ${sysProxy.type}://${sysProxy.host}:${sysProxy.port} → 账号上游代理`;
 }
 
