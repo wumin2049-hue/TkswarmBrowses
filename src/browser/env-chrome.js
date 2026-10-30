@@ -121,11 +121,31 @@ async function createEnvChrome(opts) {
   applyWindowIcon(win);
   try { win.setMenuBarVisibility(false); } catch { /* */ }
 
+  let proxyEnsuredOnce = false;
   async function beforeBrowseNav() {
-    if (typeof ensureContentProxy === 'function') {
-      try { await ensureContentProxy(); } catch (error) {
-        log(`导航前重设代理失败: ${error?.message || error}`);
-      }
+    // 首次导航设代理即可；反复 setProxy 会打断连接池、拖慢翻页
+    if (proxyEnsuredOnce || typeof ensureContentProxy !== 'function') return;
+    try {
+      await ensureContentProxy();
+      proxyEnsuredOnce = true;
+    } catch (error) {
+      log(`导航前重设代理失败: ${error?.message || error}`);
+    }
+  }
+
+  function activeContentWc() {
+    const view = views.get(activeTabId);
+    return view?.webContents || null;
+  }
+
+  function toggleContentDevTools() {
+    const wc = activeContentWc();
+    if (!wc || wc.isDestroyed()) return;
+    try {
+      if (wc.isDevToolsOpened()) wc.closeDevTools();
+      else wc.openDevTools({ mode: 'detach' });
+    } catch (error) {
+      log(`打开开发者工具失败: ${error?.message || error}`);
     }
   }
 
@@ -196,6 +216,17 @@ async function createEnvChrome(opts) {
     if (typeof onContentWebContents === 'function') {
       try { onContentWebContents(wc); } catch { /* */ }
     }
+    // 焦点在内容页时也能 F12 打开调试台
+    wc.on('before-input-event', (event, input) => {
+      if (input.type !== 'keyDown') return;
+      const key = String(input.key || '');
+      const ctrl = input.control || input.meta;
+      const isF12 = key === 'F12';
+      const isCombo = ctrl && input.shift && ['I', 'J', 'C', 'i', 'j', 'c'].includes(key);
+      if (!isF12 && !isCombo) return;
+      event.preventDefault();
+      toggleContentDevTools();
+    });
     wc.on('page-title-updated', (_e, title) => {
       tab.title = title || tab.url || '新标签页';
       sendState();
@@ -234,7 +265,11 @@ async function createEnvChrome(opts) {
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: false,
+        // 自动化/CDP 任务要求后台也不节流；性能靠 GPU + 少干扰首屏
         backgroundThrottling: false,
+        spellcheck: false,
+        webgl: true,
+        enableWebSQL: false,
       },
     });
     const tab = { id, title: '加载中…', url: normalizeUrl(url) };
@@ -326,11 +361,24 @@ async function createEnvChrome(opts) {
       sendState();
     }],
     [`${ipcPrefix}:close-window`, async () => { win.close(); }],
+    [`${ipcPrefix}:devtools`, async () => { toggleContentDevTools(); }],
   ];
 
   for (const [channel, handler] of ipcHandlers) {
     ipcMain.handle(channel, handler);
   }
+
+  // F12 / Ctrl+Shift+I|J|C → 内容页 DevTools（Console / Network / Sources）
+  win.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') return;
+    const key = String(input.key || '');
+    const ctrl = input.control || input.meta;
+    const isF12 = key === 'F12';
+    const isCombo = ctrl && input.shift && ['I', 'J', 'C', 'i', 'j', 'c'].includes(key);
+    if (!isF12 && !isCombo) return;
+    event.preventDefault();
+    toggleContentDevTools();
+  });
 
   win.on('resize', layout);
   win.on('maximize', layout);

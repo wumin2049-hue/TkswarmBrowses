@@ -195,9 +195,12 @@ async function inspectBlankContentOnWc(webContents, profileId, opts, attempt = 0
   if (!webContents || webContents.isDestroyed()) return false;
   let info = null;
   try {
+    // 避免序列化整页 outerHTML（TikTok DOM 巨大，会卡主进程）
     info = await webContents.executeJavaScript(
-      '({ href: location.href, text: (document.body ? document.body.innerText : "").trim().length,'
-      + ' html: (document.documentElement ? document.documentElement.outerHTML : "").length })',
+      '({ href: location.href,'
+      + ' text: (document.body && document.body.innerText ? document.body.innerText.length : 0),'
+      + ' html: (document.body ? document.body.childElementCount : 0),'
+      + ' nodes: document.getElementsByTagName("*").length })',
       true
     );
   } catch (error) {
@@ -205,17 +208,17 @@ async function inspectBlankContentOnWc(webContents, profileId, opts, attempt = 0
     return false;
   }
   if (!info) return false;
-  appendEnvLog(profileId, `内容检查 href=${info.href} 文本=${info.text} html=${info.html}`);
-
-  if (info.html < 600) {
-    if (attempt < 2) {
-      await new Promise((r) => setTimeout(r, 6000));
+  appendEnvLog(profileId, `内容检查 href=${info.href} 文本=${info.text} 子节点=${info.html} 元素=${info.nodes}`);
+  // 有实质 DOM / 文本即视为非空；阈值按元素数而非 outerHTML 字符
+  if ((info.nodes || 0) < 8 && (info.text || 0) < 40) {
+    if (attempt < 1) {
+      await new Promise((r) => setTimeout(r, 8000));
       return inspectBlankContentOnWc(webContents, profileId, opts, attempt + 1);
     }
     await showDiagnosticOnWebContents(webContents, profileId, {
       ...opts,
       reason: '页面已加载，但内容为空',
-      detail: `DOM 长度 ${info.html}（${info.href}）`,
+      detail: `元素 ${info.nodes} / 文本 ${info.text}（${info.href}）`,
       url: info.href,
     });
     return true;

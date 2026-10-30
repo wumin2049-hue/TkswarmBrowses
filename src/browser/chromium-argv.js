@@ -10,7 +10,7 @@ const WIN_FEATURES = ['RendererCodeIntegrity', 'CalculateNativeWinOcclusion', 'V
  */
 function buildChildChromiumArgv(options = {}) {
   const {
-    softwareRender = true,
+    softwareRender = false,
     disableSandbox = true,
     profileId = '',
   } = options;
@@ -33,6 +33,14 @@ function buildChildChromiumArgv(options = {}) {
 
   if (softwareRender) {
     args.push('--disable-gpu', '--disable-gpu-compositing', '--use-angle=swiftshader');
+  } else {
+    // 硬件加速：成熟指纹浏览器默认开 GPU，显著减轻页面卡顿
+    args.push(
+      '--ignore-gpu-blocklist',
+      '--enable-gpu-rasterization',
+      '--enable-zero-copy',
+      '--enable-features=CanvasOopRasterization',
+    );
   }
 
   if (profileId) {
@@ -45,7 +53,7 @@ function buildChildChromiumArgv(options = {}) {
 /** 将 argv 开关同步到 app.commandLine（子进程 main.js 兜底，须在 app.ready 前） */
 function applyChromiumArgvToApp(app, options = {}) {
   if (!app) return;
-  if (options.softwareRender !== false) {
+  if (options.softwareRender === true) {
     try { app.disableHardwareAcceleration(); } catch { /* */ }
   }
   for (const arg of buildChildChromiumArgv(options)) {

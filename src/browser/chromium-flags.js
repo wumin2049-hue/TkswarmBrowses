@@ -23,7 +23,7 @@ function isPackagedPortable() {
   return isPackagedApp() && Boolean(process.env.PORTABLE_EXECUTABLE_DIR);
 }
 
-/** @returns {''|'env'|'settings'|'portable'|'packaged-win'|'remote'} */
+/** @returns {''|'env'|'settings'|'remote'} */
 function wantSoftwareRender() {
   const env = String(process.env.TKSWARM_ENV_SOFTWARE_RENDER || '').trim();
   if (env === '1') return 'env';
@@ -33,8 +33,7 @@ function wantSoftwareRender() {
     if (flag === true || flag === 'true') return 'settings';
     if (flag === false || flag === 'false') return '';
   } catch { /* */ }
-  if (isPackagedPortable()) return 'portable';
-  if (isPackagedApp() && process.platform === 'win32') return 'packaged-win';
+  // 打包/便携默认 GPU；SwiftShader 仅白屏或 RDP 时手动/自动开启
   if (isRemoteSession()) return 'remote';
   return '';
 }
@@ -69,6 +68,13 @@ function buildChildChromiumArgv(opts = {}) {
       '--disable-gpu-compositing',
       '--use-angle=swiftshader',
       '--in-process-gpu',
+    );
+  } else {
+    argv.push(
+      '--ignore-gpu-blocklist',
+      '--enable-gpu-rasterization',
+      '--enable-zero-copy',
+      '--enable-features=CanvasOopRasterization',
     );
   }
   return argv;

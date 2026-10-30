@@ -33,9 +33,10 @@ const proxyAuth = path.join(tmp, 'src', 'browser', 'proxy-auth.js');
 const text = fs.readFileSync(proxyAuth, 'utf8');
 const checks = [
   ['handleSocksClient', /function handleSocksClient/],
-  ['PROXY_BRIDGE_REV', /PROXY_BRIDGE_REV\s*=\s*['"]10['"]/],
+  ['PROXY_BRIDGE_REV', /PROXY_BRIDGE_REV\s*=\s*['"]11['"]/],
   ['系统前置代理探测', /detectSystemProxy/],
-  ['上游借道系统代理', /openRawUpstream/],
+  ['默认直连账号代理', /resolveSystemProxyMode/],
+  ['上游 openRawUpstream', /openRawUpstream/],
   ['handshake slot queue', /acquireHandshakeSlot/],
   ['max tunnels config', /MAX_ACTIVE_TUNNELS/],
   ['socks5:// local rules', /socks5:\/\/127\.0\.0\.1/],

@@ -36,6 +36,7 @@ contextBridge.exposeInMainWorld('envChrome', {
   openHistory: (url) => invoke('open-history', url),
   clearHistory: () => invoke('clear-history'),
   closeWindow: () => invoke('close-window'),
+  toggleDevTools: () => invoke('devtools'),
   onState: (cb) => {
     const handler = (_e, state) => cb(state);
     const listen = () => {

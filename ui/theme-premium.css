@@ -295,8 +295,32 @@ body {
   height: 36px !important;
 }
 
-.welcome-actions .btn.ghost {
+/* 横幅上的按钮需压过全局 .btn.primary/.ghost 的 !important，否则对比度失效 */
+.welcome-banner .btn.ghost {
+  background: rgba(255, 255, 255, 0.16) !important;
+  border: 1px solid rgba(255, 255, 255, 0.4) !important;
+  color: #fff !important;
+  box-shadow: none !important;
   backdrop-filter: blur(8px);
+}
+
+.welcome-banner .btn.ghost:hover {
+  background: rgba(255, 255, 255, 0.28) !important;
+  border-color: rgba(255, 255, 255, 0.55) !important;
+  color: #fff !important;
+}
+
+.welcome-banner .btn.primary {
+  background: #fff !important;
+  color: #1e3a8a !important;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.14) !important;
+}
+
+.welcome-banner .btn.primary:hover {
+  background: #f8fafc !important;
+  color: #1e3a8a !important;
+  filter: none !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18) !important;
 }
 
 /* ---------- 统计卡 ---------- */

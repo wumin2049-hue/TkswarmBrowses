@@ -22,6 +22,9 @@ function buildInjectScript(seedKey, fp = {}) {
   const languages = String(fp.languages || 'en-US').split(',').map((x) => x.trim()).filter(Boolean);
   const devicePixelRatio = Number(fp.devicePixelRatio || fp.dpr || 1) || 1;
   const clientRectNoise = (seed % 7) - 3; // -3..3 px 级稳定偏移
+  // SPA 每帧狂调 getBoundingClientRect，默认关闭以免卡顿；TKSWARM_FP_CLIENT_RECTS=1 可开
+  const enableClientRects = fp.clientRects === true
+    || String(process.env.TKSWARM_FP_CLIENT_RECTS || '').trim() === '1';
   const fontList = Array.isArray(fp.fonts) && fp.fonts.length
     ? fp.fonts
     : ['Arial', 'Arial Black', 'Calibri', 'Cambria', 'Comic Sans MS', 'Courier New',
@@ -156,8 +159,8 @@ function buildInjectScript(seedKey, fp = {}) {
     });
   } catch (e) {}
 
-  // —— ClientRects 微调（同环境稳定） ——
-  try {
+  // —— ClientRects（可选；默认关闭，避免 SPA 布局卡顿） ——
+  ${enableClientRects ? `try {
     const noise = ${clientRectNoise};
     const patchRect = (proto, method) => {
       const orig = proto[method];
@@ -177,7 +180,7 @@ function buildInjectScript(seedKey, fp = {}) {
     };
     patchRect(Element.prototype, 'getBoundingClientRect');
     if (typeof Range !== 'undefined') patchRect(Range.prototype, 'getBoundingClientRect');
-  } catch (e) {}
+  } catch (e) {}` : ''}
 
   // —— Fonts 探测干扰（document.fonts.check） ——
   try {

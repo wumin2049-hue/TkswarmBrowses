@@ -74,8 +74,19 @@ $('btn-home').onclick = () => api.home();
 $('btn-new-tab').onclick = () => api.newTab();
 $('btn-close-win').onclick = () => api.closeWindow();
 $('btn-history').onclick = () => $('history-panel').classList.toggle('hidden');
+$('btn-devtools').onclick = () => api.toggleDevTools?.();
 $('btn-close-history').onclick = () => $('history-panel').classList.add('hidden');
 $('btn-clear-history').onclick = () => api.clearHistory();
+
+// 工具栏也响应 F12（焦点在地址栏时）
+window.addEventListener('keydown', (e) => {
+  const key = e.key;
+  const ctrl = e.ctrlKey || e.metaKey;
+  if (key === 'F12' || (ctrl && e.shiftKey && ['I', 'J', 'C', 'i', 'j', 'c'].includes(key))) {
+    e.preventDefault();
+    api.toggleDevTools?.();
+  }
+});
 
 api.onState(applyState);
 api.ready();

@@ -6,6 +6,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const zlib = require('node:zlib');
 const { spawnSync } = require('node:child_process');
 const { PROFILES_DIR, DATA_ROOT } = require('../config');
 const { profileRoot } = require('./profile-cleanup');
@@ -51,15 +52,162 @@ function ensureExportsDir() {
   return EXPORTS_DIR;
 }
 
+function tarBin() {
+  return process.platform === 'win32' ? 'tar.exe' : 'tar';
+}
+
+/**
+ * Windows 自带 bsdtar 会把参数里的 `\` 当转义（C:\data\exports → C:datalexports），
+ * 传给 tar 的路径一律改成正斜杠；优先用相对路径 + cwd 更稳。
+ */
+function toTarArg(p) {
+  const abs = path.resolve(String(p || ''));
+  return process.platform === 'win32' ? abs.replace(/\\/g, '/') : abs;
+}
+
 function hasTar() {
   try {
-    const r = spawnSync(process.platform === 'win32' ? 'tar.exe' : 'tar', ['--version'], {
+    const r = spawnSync(tarBin(), ['--version'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
     });
     return r.status === 0;
   } catch {
     return false;
+  }
+}
+
+/** ustar 头（支持 prefix，路径可用到约 255 字节） */
+function ustarHeader(namePosix, size, typeFlag = '0', mtimeSec = Math.floor(Date.now() / 1000)) {
+  const buf = Buffer.alloc(512, 0);
+  let name = String(namePosix || '').replace(/\\/g, '/');
+  let prefix = '';
+  if (Buffer.byteLength(name, 'utf8') > 100) {
+    const parts = name.split('/');
+    while (parts.length > 1) {
+      const nextPrefix = prefix ? `${prefix}/${parts[0]}` : parts[0];
+      if (Buffer.byteLength(nextPrefix, 'utf8') > 155) break;
+      prefix = nextPrefix;
+      parts.shift();
+      name = parts.join('/');
+      if (Buffer.byteLength(name, 'utf8') <= 100) break;
+    }
+  }
+  if (Buffer.byteLength(name, 'utf8') > 100) {
+    name = Buffer.from(name, 'utf8').subarray(0, 100).toString('utf8');
+  }
+  buf.write(name, 0, 100, 'utf8');
+  buf.write('0000644\0', 100, 8, 'utf8');
+  buf.write('0000000\0', 108, 8, 'utf8');
+  buf.write('0000000\0', 116, 8, 'utf8');
+  buf.write(`${(size >>> 0).toString(8).padStart(11, '0')}\0`, 124, 12, 'utf8');
+  buf.write(`${(mtimeSec >>> 0).toString(8).padStart(11, '0')}\0`, 136, 12, 'utf8');
+  buf.write('        ', 148, 8, 'utf8'); // checksum placeholder
+  buf.write(typeFlag, 156, 1, 'utf8');
+  buf.write('ustar\0', 257, 6, 'utf8');
+  buf.write('00', 263, 2, 'utf8');
+  if (prefix) buf.write(prefix, 345, 155, 'utf8');
+  let sum = 0;
+  for (let i = 0; i < 512; i += 1) sum += buf[i];
+  buf.write(`${sum.toString(8).padStart(6, '0')}\0 `, 148, 8, 'utf8');
+  return buf;
+}
+
+function collectTarEntries(rootDir) {
+  const entries = [];
+  const walk = (absDir, relPosix) => {
+    let names = [];
+    try { names = fs.readdirSync(absDir); } catch { return; }
+    for (const name of names) {
+      const abs = path.join(absDir, name);
+      const rel = relPosix ? `${relPosix}/${name}` : name;
+      let st;
+      try { st = fs.lstatSync(abs); } catch { continue; }
+      if (st.isSymbolicLink()) continue;
+      if (st.isDirectory()) {
+        entries.push({ type: '5', name: rel.endsWith('/') ? rel : `${rel}/`, size: 0, abs: null, mtime: st.mtimeMs });
+        walk(abs, rel);
+      } else if (st.isFile()) {
+        entries.push({ type: '0', name: rel, size: st.size, abs, mtime: st.mtimeMs });
+      }
+    }
+  };
+  walk(rootDir, '');
+  return entries;
+}
+
+/**
+ * 纯 Node 打 .tgz，不依赖系统 tar（规避 Windows bsdtar 吃反斜杠/中文路径）
+ * @param {string} srcDir 要打包的目录（内容作为归档根）
+ * @param {string} destTgz 输出 .tgz 绝对路径（建议放在 ASCII 临时目录）
+ */
+function createTgzNode(srcDir, destTgz) {
+  const entries = collectTarEntries(srcDir);
+  const chunks = [];
+  for (const ent of entries) {
+    const name = String(ent.name || '').replace(/\\/g, '/').replace(/^\//, '');
+    if (!name) continue;
+    const mtime = Math.floor((ent.mtime || Date.now()) / 1000);
+    if (ent.type === '5') {
+      chunks.push(ustarHeader(name.replace(/\/?$/, '/'), 0, '5', mtime));
+      continue;
+    }
+    const data = fs.readFileSync(ent.abs);
+    chunks.push(ustarHeader(name, data.length, '0', mtime));
+    chunks.push(data);
+    const pad = (512 - (data.length % 512)) % 512;
+    if (pad) chunks.push(Buffer.alloc(pad, 0));
+  }
+  chunks.push(Buffer.alloc(1024, 0));
+  const raw = Buffer.concat(chunks);
+  const gz = zlib.gzipSync(raw, { level: 6 });
+  fs.mkdirSync(path.dirname(destTgz), { recursive: true });
+  fs.writeFileSync(destTgz, gz);
+  return destTgz;
+}
+
+/** 路径含非 ASCII / 空格时，Windows bsdtar 极易把 `\` 当转义并乱码（datalexports…） */
+function pathUnsafeForWinTar(p) {
+  const s = String(p || '');
+  return /[^\x00-\x7F]/.test(s) || /\s/.test(s);
+}
+
+/**
+ * 打 .tgz：Windows 一律走纯 Node（避开 bsdtar 中文/空格路径）；
+ * 其它平台可试系统 tar（cwd + 相对名），失败再 Node。
+ * destTgz 必须是调用方准备好的 ASCII 路径。
+ */
+function createTgzFromDir(srcDir, destTgz) {
+  const outName = path.basename(destTgz) || 'pack.tgz';
+  const preferNode = process.platform === 'win32'
+    || pathUnsafeForWinTar(srcDir)
+    || pathUnsafeForWinTar(destTgz);
+
+  try {
+    if (!preferNode && hasTar()) {
+      const inSrc = path.join(srcDir, outName);
+      const hasMeta = fs.existsSync(path.join(srcDir, 'meta.json'));
+      const args = hasMeta
+        ? ['-czf', outName, 'meta.json', 'userdata']
+        : ['-czf', outName, '.'];
+      const r = spawnSync(tarBin(), args, {
+        encoding: 'utf8',
+        cwd: srcDir,
+        windowsHide: true,
+      });
+      if (r.status === 0 && fs.existsSync(inSrc) && fs.statSync(inSrc).size > 0) {
+        fs.copyFileSync(inSrc, destTgz);
+        try { fs.unlinkSync(inSrc); } catch { /* */ }
+        return { filePath: destTgz, via: 'tar' };
+      }
+      console.warn('[profile-backup] system tar failed, fallback to node tgz:', r.stderr || r.stdout || r.status);
+    }
+    createTgzNode(srcDir, destTgz);
+    return { filePath: destTgz, via: 'node' };
+  } catch (e) {
+    createTgzNode(srcDir, destTgz);
+    return { filePath: destTgz, via: 'node-catch' };
   }
 }
 
@@ -108,8 +256,10 @@ function exportProfilePack(profileId, { closeFirst } = {}) {
   ensureExportsDir();
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   const fileName = `tkswarm-profile-${id.slice(0, 12)}-${stamp}.tgz`;
-  const filePath = path.join(EXPORTS_DIR, fileName);
+  const mirrorPath = path.join(EXPORTS_DIR, fileName);
+  // 工作目录与成品一律放系统 Temp（纯 ASCII），避免安装目录含「Tik Tok / 中文」时 tar/上传踩坑
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'tk-br-export-'));
+  const asciiTgz = path.join(work, fileName);
 
   try {
     const meta = {
@@ -121,32 +271,30 @@ function exportProfilePack(profileId, { closeFirst } = {}) {
       profile: { ...row },
       note: closeFirst ? 'exported-after-close-hint' : 'export-live-ok-if-idle',
     };
-    fs.writeFileSync(path.join(work, 'meta.json'), JSON.stringify(meta, null, 2), 'utf8');
-    const ud = path.join(work, 'userdata');
-    copyDirFiltered(profileRoot(id), ud);
+    const stage = path.join(work, 'stage');
+    fs.mkdirSync(stage, { recursive: true });
+    fs.writeFileSync(path.join(stage, 'meta.json'), JSON.stringify(meta, null, 2), 'utf8');
+    copyDirFiltered(profileRoot(id), path.join(stage, 'userdata'));
 
-    if (!hasTar()) {
-      const dirPack = filePath.replace(/\.tgz$/i, '.tkpack');
-      if (fs.existsSync(dirPack)) fs.rmSync(dirPack, { recursive: true, force: true });
-      fs.cpSync(work, dirPack, { recursive: true });
-      return {
-        filePath: dirPack,
-        fileName: path.basename(dirPack),
-        bytes: dirSize(dirPack),
-        kind: 'tkpack',
-      };
+    const packed = createTgzFromDir(stage, asciiTgz);
+    const st = fs.statSync(asciiTgz);
+    // 可选镜像到 data/exports（UI 列表用）；失败不影响返回 ASCII 路径给 Node 上传
+    try {
+      fs.copyFileSync(asciiTgz, mirrorPath);
+    } catch (e) {
+      console.warn('[profile-backup] mirror to exports failed (ok if Chinese path):', e.message || e);
     }
-
-    const r = spawnSync(
-      process.platform === 'win32' ? 'tar.exe' : 'tar',
-      ['-czf', filePath, '-C', work, 'meta.json', 'userdata'],
-      { encoding: 'utf8' },
-    );
-    if (r.status !== 0) {
-      throw new Error(r.stderr || r.stdout || 'tar 打包失败');
-    }
-    const st = fs.statSync(filePath);
-    return { filePath, fileName, bytes: st.size, kind: 'tgz' };
+    // 把成品移出即将删除的 work，放到独立 ASCII 临时文件，供 Node 读取上传
+    const handoff = path.join(os.tmpdir(), `tk-pack-out-${id.slice(0, 12)}-${Date.now()}.tgz`);
+    fs.copyFileSync(asciiTgz, handoff);
+    return {
+      filePath: handoff,
+      fileName,
+      bytes: st.size,
+      kind: 'tgz',
+      via: packed?.via || 'node',
+      mirrorPath: fs.existsSync(mirrorPath) ? mirrorPath : '',
+    };
   } finally {
     try { fs.rmSync(work, { recursive: true, force: true }); } catch { /* */ }
   }
@@ -154,12 +302,58 @@ function exportProfilePack(profileId, { closeFirst } = {}) {
 
 function extractTgz(tgzPath, destDir) {
   fs.mkdirSync(destDir, { recursive: true });
-  const r = spawnSync(
-    process.platform === 'win32' ? 'tar.exe' : 'tar',
-    ['-xzf', tgzPath, '-C', destDir],
-    { encoding: 'utf8' },
-  );
-  if (r.status !== 0) throw new Error(r.stderr || '解压失败');
+  // 先拷到 ASCII 临时目录再解压，避免 Windows tar 吃中文路径
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tk-tgz-x-'));
+  const tmpTgz = path.join(tmpRoot, 'pack.tgz');
+  const tmpOut = path.join(tmpRoot, 'out');
+  fs.mkdirSync(tmpOut, { recursive: true });
+  try {
+    fs.copyFileSync(tgzPath, tmpTgz);
+    if (hasTar()) {
+      const r = spawnSync(
+        tarBin(),
+        ['-xzf', 'pack.tgz', '-C', 'out'],
+        { encoding: 'utf8', cwd: tmpRoot, windowsHide: true },
+      );
+      if (r.status === 0) {
+        fs.cpSync(tmpOut, destDir, { recursive: true });
+        return;
+      }
+    }
+    // Node 回退：gunzip + 简易 ustar 解压（仅本格式）
+    const raw = zlib.gunzipSync(fs.readFileSync(tmpTgz));
+    extractUstarBuffer(raw, destDir);
+  } finally {
+    try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* */ }
+  }
+}
+
+function extractUstarBuffer(buf, destDir) {
+  let offset = 0;
+  while (offset + 512 <= buf.length) {
+    const header = buf.subarray(offset, offset + 512);
+    offset += 512;
+    if (header.every((b) => b === 0)) break;
+    const name = header.toString('utf8', 0, 100).replace(/\0.*$/, '');
+    const prefix = header.toString('utf8', 345, 500).replace(/\0.*$/, '');
+    const sizeOct = header.toString('utf8', 124, 135).replace(/\0.*$/, '').trim();
+    const typeFlag = String.fromCharCode(header[156] || 48);
+    const size = parseInt(sizeOct || '0', 8) || 0;
+    const full = (prefix ? `${prefix}/` : '') + name;
+    const rel = full.replace(/\\/g, '/').replace(/^\//, '');
+    if (!rel || rel.includes('..')) {
+      offset += Math.ceil(size / 512) * 512;
+      continue;
+    }
+    const abs = path.join(destDir, ...rel.split('/').filter(Boolean));
+    if (typeFlag === '5' || rel.endsWith('/')) {
+      fs.mkdirSync(abs, { recursive: true });
+    } else {
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, buf.subarray(offset, offset + size));
+    }
+    offset += Math.ceil(size / 512) * 512;
+  }
 }
 
 /**
@@ -284,4 +478,6 @@ module.exports = {
   EXPORTS_DIR,
   ensureExportsDir,
   PROFILES_DIR,
+  createTgzFromDir,
+  createTgzNode,
 };

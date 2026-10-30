@@ -1,24 +1,30 @@
 /**
- * 本地代理桥：Chrome/Electron 对带账密 SOCKS5 支持差，且 session.setProxy 直连上游 SOCKS 不稳定。
- * 在 127.0.0.1 起无认证本地 SOCKS5，再转发到上游（支持 IPv4 / 域名 / IPv6）。
+ * 本地代理桥（指纹浏览器成熟方案，与 AdsPower / 比特同思路）：
+ * - 业务出口 = 账号绑定的上游代理（proxies 表），每环境独立，天然支持多代理
+ * - Chromium 对「带账密 SOCKS5」支持差 → 在 127.0.0.1 起无认证本地 SOCKS 桥再转发上游
+ * - 127.0.0.1 桥 ≠ Clash/系统代理：桥只做账密转发，几乎零延迟，不串线
  * 打包后可在 env-*.log 搜 PROXY_BRIDGE_REV 确认是否为新桥代码。
  */
 const net = require('node:net');
 const http = require('node:http');
 const { execFile } = require('node:child_process');
+const { readSettings } = require('../settings');
 
 /** 代理桥实现版本（发版后对照 env 日志，避免误用旧 dist/ 或未下载的新 Release） */
-const PROXY_BRIDGE_REV = '10';
+const PROXY_BRIDGE_REV = '11';
 
 /* ------------------------------------------------------------------ *
- * 前置系统代理（v2ray / clash / 公司代理）
+ * 系统前置代理（Clash / v2ray）—— 默认不走，避免拖慢 / 破坏多代理隔离
  *
- * 大陆机器直连海外住宅代理的高位端口，TCP 常常直接超时或被重置
- * （日志里就是 connect ETIMEDOUT / read ECONNRESET），这跟账密无关。
- * 比特浏览器能稳，是因为它自带的 Chromium 打了补丁：连上游代理时先借道
- * 系统代理。这里在桥里做同样的事——探测 Windows 系统代理，用它 CONNECT
- * 到上游代理，再在上游代理里做 SOCKS5 握手。
- * 设置 TKSWARM_NO_SYSTEM_PROXY=1 可关闭。
+ * 成熟指纹浏览器：浏览器只连「账号自己的代理」。本机 Clash 不是必需品。
+ * 仅当直连海外住宅代理端口失败（ETIMEDOUT 等）时，才可选借道系统代理作回退
+ * （大陆机器偶发需要）。强制借道会把所有账号挤进同一 Clash 节点，又慢又串线。
+ *
+ * 模式（优先级：环境变量 > settings.json systemProxyMode）：
+ *   direct  —— 只直连账号代理（默认）
+ *   auto    —— 先直连，失败再借道系统代理
+ *   system  —— 优先经系统代理连上游（旧行为；需本机已开 Clash）
+ * TKSWARM_NO_SYSTEM_PROXY=1 等价 direct；TKSWARM_USE_SYSTEM_PROXY=1 等价 system。
  * ------------------------------------------------------------------ */
 
 const SYS_PROXY_TTL_MS = 60000;
@@ -43,8 +49,26 @@ function isOwnBridgePort(port) {
   return false;
 }
 
+/**
+ * @returns {'direct'|'auto'|'system'}
+ */
+function resolveSystemProxyMode() {
+  const noSys = String(process.env.TKSWARM_NO_SYSTEM_PROXY || '').trim();
+  if (noSys === '1') return 'direct';
+  const forceSys = String(process.env.TKSWARM_USE_SYSTEM_PROXY || '').trim();
+  if (forceSys === '1') return 'system';
+  const envMode = String(process.env.TKSWARM_SYSTEM_PROXY_MODE || '').trim().toLowerCase();
+  if (envMode === 'direct' || envMode === 'auto' || envMode === 'system') return envMode;
+  try {
+    const raw = String(readSettings().systemProxyMode || '').trim().toLowerCase();
+    if (raw === 'direct' || raw === 'auto' || raw === 'system') return raw;
+  } catch { /* */ }
+  // 默认直连账号代理：多代理隔离 + 不吃本地 Clash 延迟
+  return 'direct';
+}
+
 function systemProxyDisabled() {
-  return String(process.env.TKSWARM_NO_SYSTEM_PROXY || '').trim() === '1';
+  return resolveSystemProxyMode() === 'direct';
 }
 
 /**
@@ -270,35 +294,68 @@ function isImmediateFailure(error) {
     || /状态码/.test(msg);
 }
 
+/** 直连上游失败时，值得再试系统前置代理的错误 */
+function isDirectConnectFailure(error) {
+  const code = String(error?.code || '');
+  const msg = String(error?.message || error);
+  return code === 'ETIMEDOUT'
+    || code === 'ECONNREFUSED'
+    || code === 'ECONNRESET'
+    || code === 'ENETUNREACH'
+    || code === 'EHOSTUNREACH'
+    || /超时/.test(msg);
+}
+
+async function connectViaSystemProxy(sysProxy, targetHost, targetPort, timeoutMs) {
+  if (sysProxy.type === 'socks5') {
+    return viaSocksProxy(sysProxy, targetHost, targetPort, timeoutMs);
+  }
+  return viaHttpProxy(sysProxy, targetHost, targetPort, timeoutMs);
+}
+
+function pickUsableSystemProxy(sysProxy, targetHost, targetPort) {
+  if (!sysProxy) return null;
+  if (isOwnBridgePort(sysProxy.port)) return null;
+  if (sysProxy.host === targetHost && Number(sysProxy.port) === targetPort) return null;
+  return sysProxy;
+}
+
 /**
- * 建立到上游代理服务器的原始套接字。
- * 有系统前置代理且目标不是本机时自动借道；前置代理不可用时立刻退回直连。
+ * 建立到「账号绑定上游代理」的原始套接字。
+ * 默认直连（多代理隔离）；仅 system / auto 回退时才借道本机 Clash。
  */
 async function openRawUpstream(host, port, timeoutMs = 15000) {
   const targetHost = String(host || '');
   const targetPort = Number(port);
   const isLocal = /^(127\.|localhost$|::1$|0\.0\.0\.0$)/i.test(targetHost);
+  const mode = resolveSystemProxyMode();
 
-  if (!isLocal) {
-    const sysProxy = await detectSystemProxy();
-    const usable = sysProxy
-      && !isOwnBridgePort(sysProxy.port)
-      && !(sysProxy.host === targetHost && Number(sysProxy.port) === targetPort);
-    if (usable) {
+  if (!isLocal && mode === 'system') {
+    const sysProxy = pickUsableSystemProxy(await detectSystemProxy(), targetHost, targetPort);
+    if (sysProxy) {
       try {
-        if (sysProxy.type === 'socks5') {
-          return await viaSocksProxy(sysProxy, targetHost, targetPort, timeoutMs);
-        }
-        return await viaHttpProxy(sysProxy, targetHost, targetPort, timeoutMs);
+        logBridge(`经系统前置代理 ${sysProxy.type}://${sysProxy.host}:${sysProxy.port} → ${targetHost}:${targetPort}`);
+        return await connectViaSystemProxy(sysProxy, targetHost, targetPort, timeoutMs);
       } catch (error) {
-        // 前置代理没开/端口变了：退回直连，别让它变成新的故障点
         if (!isImmediateFailure(error)) throw error;
-        logBridge(`前置代理 ${sysProxy.type}://${sysProxy.host}:${sysProxy.port} 不可用（${error?.message || error}），已退回直连`);
+        logBridge(`前置代理不可用（${error?.message || error}），已退回直连账号代理`);
       }
     }
   }
 
-  return connectDirect(targetHost, targetPort, timeoutMs);
+  try {
+    return await connectDirect(targetHost, targetPort, timeoutMs);
+  } catch (directErr) {
+    if (isLocal || mode === 'direct' || !isDirectConnectFailure(directErr)) {
+      throw directErr;
+    }
+    const sysProxy = pickUsableSystemProxy(await detectSystemProxy(), targetHost, targetPort);
+    if (!sysProxy) throw directErr;
+    logBridge(
+      `直连账号代理失败（${directErr?.message || directErr}），auto 回退系统前置代理 ${sysProxy.type}://${sysProxy.host}:${sysProxy.port}`,
+    );
+    return connectViaSystemProxy(sysProxy, targetHost, targetPort, timeoutMs);
+  }
 }
 
 /** @type {Map<string, { server: net.Server, port: number, refs: number }>} */
@@ -314,8 +371,8 @@ const bridges = new Map();
  * ------------------------------------------------------------------ */
 
 function readHandshakeLimit() {
-  const raw = Number(process.env.TKSWARM_PROXY_HANDSHAKE_LIMIT || 4);
-  if (!Number.isFinite(raw) || raw < 1) return 4;
+  const raw = Number(process.env.TKSWARM_PROXY_HANDSHAKE_LIMIT || 8);
+  if (!Number.isFinite(raw) || raw < 1) return 8;
   return Math.min(Math.floor(raw), 32);
 }
 const HANDSHAKE_LIMIT = readHandshakeLimit();
@@ -900,9 +957,17 @@ async function probeUpstreamSocks5(upHost, upPort, user, pass, destHost, destPor
 
 /** 一句话描述当前链路（给日志和诊断页用） */
 async function describeUpstreamRoute() {
-  const sysProxy = await detectSystemProxy();
-  if (!sysProxy) return '直连上游代理（未检测到系统前置代理）';
-  return `经系统前置代理 ${sysProxy.type}://${sysProxy.host}:${sysProxy.port} → 上游代理`;
+  const mode = resolveSystemProxyMode();
+  const sysProxy = mode === 'direct' ? null : await detectSystemProxy();
+  if (mode === 'direct') {
+    return '直连账号绑定代理（默认；不经本机 Clash/系统代理）';
+  }
+  if (mode === 'auto') {
+    if (!sysProxy) return '优先直连账号代理；失败时可回退系统前置代理（当前未检测到）';
+    return `优先直连账号代理；失败回退 ${sysProxy.type}://${sysProxy.host}:${sysProxy.port}`;
+  }
+  if (!sysProxy) return '模式=system，但未检测到系统前置代理 → 将直连账号代理';
+  return `经系统前置代理 ${sysProxy.type}://${sysProxy.host}:${sysProxy.port} → 账号上游代理`;
 }
 
 module.exports = {
@@ -915,6 +980,7 @@ module.exports = {
   connectUpstreamSocks5,
   detectSystemProxy,
   describeUpstreamRoute,
+  resolveSystemProxyMode,
   PROXY_BRIDGE_REV,
   MAX_ACTIVE_TUNNELS,
   HANDSHAKE_LIMIT,

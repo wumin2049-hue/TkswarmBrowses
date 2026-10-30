@@ -268,9 +268,10 @@ function bindContentWatchers(webContents, proxyDisplay) {
     clearTimeout(hardTimeout);
     if (inspected || settled) return;
     inspected = true;
+    // 首屏后再轻量检查，避免抢解析/渲染
     setTimeout(() => {
       inspectBlankContentOnWc(webContents, profileId, diagOpts).catch(() => {});
-    }, 2500);
+    }, 8000);
   });
 }
 
@@ -369,26 +370,29 @@ app.whenReady().then(async () => {
   contentWc?.on('responsive', () => logLine('窗口恢复响应'));
   logLine('环境浏览器外壳已就绪');
 
-  // 上游代理自检：顺序探测 + 延迟并发测试，避免和 TikTok 首屏抢代理连接
+  // 上游代理自检：延后到首屏之后，避免和 TikTok 抢代理连接槽（卡顿主因之一）
   if (cfg.proxyMeta?.proxy_host) {
-    void probeProxySummary(cfg.proxyMeta, { timeoutMs: 5000 })
-      .then(async (text) => {
+    const probeDelayMs = Math.max(0, Number(process.env.TKSWARM_PROXY_PROBE_DELAY_MS || 25000) || 25000);
+    const burstEnabled = String(process.env.TKSWARM_PROXY_PROBE_BURST || '').trim() === '1';
+    void (async () => {
+      try {
+        await new Promise((r) => setTimeout(r, probeDelayMs));
+        const text = await probeProxySummary(cfg.proxyMeta, { timeoutMs: 4000 });
         proxyProbeText = text;
         logLine(`代理自检: ${text}`);
-        try {
-          await new Promise((r) => setTimeout(r, 12000));
+        if (burstEnabled) {
           const burst = await probeBurst(cfg.proxyMeta, {
-            count: 3,
-            timeoutMs: 5000,
+            count: 2,
+            timeoutMs: 4000,
             sequential: true,
-            gapMs: 200,
+            gapMs: 400,
           });
           const hint = burst.ok > 0
-            ? `；顺序并发探测 ${burst.ok}/${burst.count} 成功（可设 TKSWARM_PROXY_MAX_TUNNELS=${Math.max(2, burst.ok)}）`
-            : `；顺序并发探测 0/${burst.count}（页面加载期间请勿重复刷新）`;
+            ? `；顺序探测 ${burst.ok}/${burst.count} 成功`
+            : `；顺序探测 0/${burst.count}`;
           proxyProbeText = `${text}${hint}`;
-          logLine(`代理自检(延迟): ${hint}`);
-        } catch { /* */ }
+          logLine(`代理自检(burst): ${hint}`);
+        }
         try {
           const wc = chrome.getActiveWebContents();
           const href = wc?.getURL() || '';
@@ -403,8 +407,10 @@ app.whenReady().then(async () => {
             }).catch(() => {});
           }
         } catch { /* */ }
-      })
-      .catch((error) => logLine(`代理自检异常: ${error?.message || error}`));
+      } catch (error) {
+        logLine(`代理自检异常: ${error?.message || error}`);
+      }
+    })();
   }
 });
 

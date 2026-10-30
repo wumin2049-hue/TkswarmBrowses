@@ -26,6 +26,10 @@ function isPackagedPortable() {
   return isPackagedApp() && Boolean(process.env.PORTABLE_EXECUTABLE_DIR);
 }
 
+/**
+ * 软件渲染（SwiftShader）极吃 CPU，默认关闭以免环境窗卡顿。
+ * 仅在白屏 / 远程桌面等场景按需开启：settings / 环境变量 / RDP。
+ */
 function wantSoftwareRender() {
   const env = String(process.env.TKSWARM_ENV_SOFTWARE_RENDER || '').trim();
   if (env === '1') return 'env';
@@ -35,15 +39,14 @@ function wantSoftwareRender() {
     if (flag === true || flag === 'true') return 'settings';
     if (flag === false || flag === 'false') return '';
   } catch { /* default below */ }
-  if (isPackagedPortable()) return 'portable';
-  if (isPackagedApp() && process.platform === 'win32') return 'packaged-win';
+  // 打包版 / 便携版默认走 GPU 硬件加速（成熟指纹浏览器同策略）；白屏再手动开软件渲染
   if (isRemoteSession()) return 'remote';
   return '';
 }
 
 function applySoftwareRenderFlags(app, options = {}) {
   applyChromiumArgvToApp(app, {
-    softwareRender: options.softwareRender !== false,
+    softwareRender: options.softwareRender === true,
     disableSandbox: options.disableSandbox !== false,
     profileId: options.profileId || '',
   });
