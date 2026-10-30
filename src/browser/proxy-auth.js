@@ -11,7 +11,7 @@ const { execFile } = require('node:child_process');
 const { readSettings } = require('../settings');
 
 /** 代理桥实现版本（发版后对照 env 日志，避免误用旧 dist/ 或未下载的新 Release） */
-const PROXY_BRIDGE_REV = '12';
+const PROXY_BRIDGE_REV = '13';
 
 /* ------------------------------------------------------------------ *
  * 系统前置代理（Clash / v2ray）—— 默认不走，避免拖慢 / 破坏多代理隔离
@@ -372,19 +372,20 @@ const bridges = new Map();
 
 function readHandshakeLimit() {
   // 住宅 SOCKS 常见并发 1～5；默认 8/64 会把濒死节点打成「TCP/握手全超时」
-  const raw = Number(process.env.TKSWARM_PROXY_HANDSHAKE_LIMIT || 3);
-  if (!Number.isFinite(raw) || raw < 1) return 3;
+  // 高延迟（800ms+）下略放宽到 4，减少 Chromium 首屏排队导致的 ERR_SOCKS
+  const raw = Number(process.env.TKSWARM_PROXY_HANDSHAKE_LIMIT || 4);
+  if (!Number.isFinite(raw) || raw < 1) return 4;
   return Math.min(Math.floor(raw), 32);
 }
 const HANDSHAKE_LIMIT = readHandshakeLimit();
 const HANDSHAKE_QUEUE_TIMEOUT_MS = Math.max(
-  5000,
-  Number(process.env.TKSWARM_PROXY_HANDSHAKE_QUEUE_MS || 30000) || 30000,
+  15000,
+  Number(process.env.TKSWARM_PROXY_HANDSHAKE_QUEUE_MS || 90000) || 90000,
 );
 /** 软上限：只用于日志观察，不阻塞连接 */
 const MAX_ACTIVE_TUNNELS = Math.max(
   HANDSHAKE_LIMIT,
-  Math.min(Number(process.env.TKSWARM_PROXY_MAX_TUNNELS || 8) || 8, 256),
+  Math.min(Number(process.env.TKSWARM_PROXY_MAX_TUNNELS || 10) || 10, 256),
 );
 
 let activeHandshakes = 0;
@@ -535,12 +536,41 @@ function buildSocks5ConnectBuf(dest) {
 }
 
 /**
- * 单次上游连接超时。住宅/轮换代理经常出现「一次 ETIMEDOUT、下一次就通」，
- * 所以单次别等太久（20s+ 干等没意义），改成短超时 + 多次重试。
+ * 单次上游 TCP 连接超时。
+ * 住宅代理延迟常 800ms+，旧默认 9s 在抖动/排队时极易误杀；改为约 22s，仍靠多次重试兜底。
  */
-const UPSTREAM_TIMEOUT_MS = 9000;
+function readUpstreamTimeoutMs() {
+  const raw = Number(process.env.TKSWARM_PROXY_UPSTREAM_TIMEOUT_MS || 22000);
+  if (!Number.isFinite(raw) || raw < 5000) return 22000;
+  return Math.min(Math.floor(raw), 60000);
+}
+const UPSTREAM_TIMEOUT_MS = readUpstreamTimeoutMs();
+/**
+ * TCP 通了之后的 SOCKS/HTTP 握手空闲超时（多轮 RTT：greeting+auth+CONNECT）。
+ * 800ms RTT 理想约 3～4s；抖动到 2～3s/跳时需更大余量。
+ */
+function readHandshakeIdleTimeoutMs() {
+  const raw = Number(process.env.TKSWARM_PROXY_HANDSHAKE_IDLE_MS || 28000);
+  if (!Number.isFinite(raw) || raw < 8000) return 28000;
+  return Math.min(Math.floor(raw), 90000);
+}
+const HANDSHAKE_IDLE_TIMEOUT_MS = readHandshakeIdleTimeoutMs();
 /** 上游连接重试次数（含首次） */
-const UPSTREAM_ATTEMPTS = 3;
+function readUpstreamAttempts() {
+  const raw = Number(process.env.TKSWARM_PROXY_UPSTREAM_ATTEMPTS || 4);
+  if (!Number.isFinite(raw) || raw < 1) return 4;
+  return Math.min(Math.floor(raw), 8);
+}
+const UPSTREAM_ATTEMPTS = readUpstreamAttempts();
+
+function armSocketIdleTimeout(sock, timeoutMs, onTimeout) {
+  if (!sock) return;
+  try {
+    sock.setTimeout(timeoutMs);
+    sock.removeAllListeners('timeout');
+    sock.on('timeout', onTimeout);
+  } catch { /* */ }
+}
 
 function socksGreetingPacket(mode) {
   if (mode === 'auth-only') return Buffer.from([0x05, 0x01, 0x02]);
@@ -591,7 +621,10 @@ function connectUpstreamSocks5(host, port, user, pass, dest, greetAttempt = 0) {
     openRawUpstream(host, port, UPSTREAM_TIMEOUT_MS).then((rawSocket) => {
       sock = rawSocket;
       sock.on('error', fail);
-      sock.on('timeout', () => fail(new Error('上游 SOCKS 连接超时')));
+      // TCP 已通：改用更长的握手空闲超时，避免 800ms+ 多 RTT 被 9s 误杀
+      armSocketIdleTimeout(sock, HANDSHAKE_IDLE_TIMEOUT_MS, () => fail(new Error(
+        `上游 SOCKS 握手超时（>${HANDSHAKE_IDLE_TIMEOUT_MS}ms，高延迟代理可调 TKSWARM_PROXY_HANDSHAKE_IDLE_MS）`
+      )));
       sock.on('data', (chunk) => {
         buf = Buffer.concat([buf, chunk]);
         if (stage === 'greeting') {
@@ -681,7 +714,9 @@ function connectUpstreamHttp(host, port, user, pass, destHost, destPort) {
     openRawUpstream(host, port, UPSTREAM_TIMEOUT_MS).then((rawSocket) => {
       sock = rawSocket;
       sock.on('error', fail);
-      sock.on('timeout', () => fail(new Error('上游 HTTP 代理连接超时')));
+      armSocketIdleTimeout(sock, HANDSHAKE_IDLE_TIMEOUT_MS, () => fail(new Error(
+        `上游 HTTP 代理握手超时（>${HANDSHAKE_IDLE_TIMEOUT_MS}ms）`
+      )));
       sock.on('data', (chunk) => {
         buf += chunk.toString('binary');
         const idx = buf.indexOf('\r\n\r\n');
@@ -841,11 +876,12 @@ function handleSocksClient(client, profile, onError, onLog) {
         ? connectUpstreamHttp(upHost, upPort, user, pass, dest.host, dest.port)
         : connectUpstreamSocks5(upHost, upPort, user, pass, dest));
 
-      // 住宅代理常见「这一次超时、下一次就通」，短超时 + 重试明显更稳
+      // 高延迟住宅：失败后退避再试（避免 800ms+ 节点被连打）
       const attempt = (n) => openUpstream().catch((error) => {
         log(`上游连接失败（第 ${n}/${UPSTREAM_ATTEMPTS} 次）: ${error?.message || error}`);
         if (n >= UPSTREAM_ATTEMPTS) throw error;
-        return new Promise((done) => setTimeout(done, 300 * n)).then(() => attempt(n + 1));
+        const backoff = Math.min(4000, 400 * n + Math.floor(Math.random() * 400));
+        return new Promise((done) => setTimeout(done, backoff)).then(() => attempt(n + 1));
       });
 
       // 只限制「同时正在握手」的条数，握手完成立刻释放，不会堵住已建立的隧道

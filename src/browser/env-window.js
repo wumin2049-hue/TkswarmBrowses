@@ -277,7 +277,12 @@ function bindContentWatchers(webContents, proxyDisplay) {
 
 /* ---------------- 启动 ---------------- */
 app.whenReady().then(async () => {
-  logLine(`启动环境窗口 v${app.getVersion()} profile=${profileId} headless=${cfg.headless ? 1 : 0} target=${targetUrl} PROXY_BRIDGE_REV=${PROXY_BRIDGE_REV} PROXY_HANDSHAKE_LIMIT=${HANDSHAKE_LIMIT} PROXY_MAX_TUNNELS=${MAX_ACTIVE_TUNNELS}`);
+  logLine(
+    `启动环境窗口 v${app.getVersion()} profile=${profileId} headless=${cfg.headless ? 1 : 0} target=${targetUrl}`
+    + ` PROXY_BRIDGE_REV=${PROXY_BRIDGE_REV} PROXY_HANDSHAKE_LIMIT=${HANDSHAKE_LIMIT} PROXY_MAX_TUNNELS=${MAX_ACTIVE_TUNNELS}`
+    + ` UPSTREAM_TIMEOUT_MS=${process.env.TKSWARM_PROXY_UPSTREAM_TIMEOUT_MS || '22000'}`
+    + ` HANDSHAKE_IDLE_MS=${process.env.TKSWARM_PROXY_HANDSHAKE_IDLE_MS || '28000'}`
+  );
   describeUpstreamRoute().then((route) => logLine(`上游链路：${route}`)).catch(() => {});
 
   const contentSes = session.defaultSession;

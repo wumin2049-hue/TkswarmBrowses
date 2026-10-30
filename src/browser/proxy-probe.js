@@ -10,7 +10,7 @@ const REPLY_HINT = /拒绝|认证|账密|不可达|规则|超时|ETIMEDOUT|ECONN
  * 探一个目标（顺序调用；复用桥的 connectUpstreamSocks5 + 短超时重试）
  */
 async function probeDest({
-  host, port, user, pass, destHost, destPort, timeoutMs = 5000,
+  host, port, user, pass, destHost, destPort, timeoutMs = 15000,
 }) {
   const started = Date.now();
   const dest = `${destHost}:${destPort}`;
