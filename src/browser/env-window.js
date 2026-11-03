@@ -177,15 +177,8 @@ function buildDiagnosticHtml(opts) {
 </div></body></html>`;
 }
 
-/** 加载中 / 诊断页：优先 data:（不依赖 asar/CWD），再 PORTABLE_EXECUTABLE_DIR/data/logs */
+/** 加载中 / 诊断页：优先 file:（避免 CDP/省流误拦 data: 把 HTML 渲成纯文本乱码） */
 async function loadBuiltinHtml(browserWindow, html) {
-  try {
-    await browserWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
-    logLine('状态页已通过 data: URL 加载');
-    return;
-  } catch (error) {
-    logLine(`data: URL 加载失败: ${error?.message || error}`);
-  }
   const root = dataRoot()
     || path.join(process.env.PORTABLE_EXECUTABLE_DIR || app.getPath('temp'), 'data');
   const file = path.join(root, 'logs', `env-${profileId}-status.html`);
@@ -194,8 +187,15 @@ async function loadBuiltinHtml(browserWindow, html) {
     fs.writeFileSync(file, html, 'utf8');
     await browserWindow.loadURL(pathToFileURL(file).href);
     logLine(`状态页已通过 file: URL 加载 ${file}`);
+    return;
   } catch (error) {
     logLine(`file: URL 加载失败: ${error?.message || error}`);
+  }
+  try {
+    await browserWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+    logLine('状态页已通过 data: URL 加载');
+  } catch (error) {
+    logLine(`data: URL 加载失败: ${error?.message || error}`);
     await browserWindow.loadURL(`data:text/html,${encodeURIComponent(html)}`).catch(() => {});
   }
 }

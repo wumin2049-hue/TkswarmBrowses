@@ -1,7 +1,9 @@
 /**
- * Profile 打包导出 / 导入：meta.json + userdata（Cookie 等）。
+ * Profile 打包导出 / 导入：meta.json + userdata（仅登录会话）。
  * 统一 format：tkswarm-browser-profile（兼容旧 tkswarm-linuxbrowse-profile）。
- * 排除 Cache 等体积大目录，保留 Cookies / Local Storage 以跨机保持登录态。
+ *
+ * 重要：用白名单只打 Cookies / Local Storage / Preferences 等会话必要项，
+ * 不打 IndexedDB、Service Worker、Cache、blob 等站点缓存（否则包会随使用涨到几十 MB）。
  */
 const fs = require('node:fs');
 const path = require('node:path');
@@ -18,7 +20,30 @@ const LEGACY_FORMATS = new Set(['tkswarm-browser-profile', 'tkswarm-linuxbrowse-
 
 const EXPORTS_DIR = path.join(DATA_ROOT, 'exports');
 
-/** 顶层或任意层级跳过的目录/文件名（控体积；登录态目录不在此列） */
+/**
+ * 仅打包这些相对路径（相对 Chromium user-data-dir）。
+ * 指纹/代理配置在 meta.json 的 profile 行，不依赖 userdata 大目录。
+ */
+const SESSION_KEEP_RELS = [
+  'Local State',
+  'First Run',
+  'Default/Preferences',
+  'Default/Secure Preferences',
+  'Default/Cookies',
+  'Default/Cookies-journal',
+  'Default/Login Data',
+  'Default/Login Data-journal',
+  'Default/Local Storage',
+  'Default/Session Storage',
+  'Default/Network/Cookies',
+  'Default/Network/Cookies-journal',
+  'Default/Network/Network Persistent State',
+  'Default/Network/TransportSecurity',
+  'Default/Extension Cookies',
+  'Default/Extension Cookies-journal',
+];
+
+/** 白名单目录内部仍跳过的缓存名（兜底） */
 const SKIP_NAMES = new Set([
   '.tkswarm-chrome.pid',
   'SingletonLock',
@@ -33,10 +58,22 @@ const SKIP_NAMES = new Set([
   'GraphiteDawnCache',
   'DawnGraphiteCache',
   'DawnWebGPUCache',
+  'DawnCache',
   'Crashpad',
   'BrowserMetrics',
   'component_crx_cache',
   'optimization_guide_model_store',
+  'IndexedDB',
+  'Service Worker',
+  'Service Workers',
+  'CacheStorage',
+  'blob_storage',
+  'File System',
+  'VideoDecodeStats',
+  'History',
+  'Favicons',
+  'shared_proto_db',
+  'Platform Notifications',
 ]);
 
 function clientVersion() {
@@ -230,6 +267,31 @@ function copyDirFiltered(src, dest) {
   }
 }
 
+/** 只拷贝登录会话白名单路径，避免 IndexedDB 等把环境包撑到几十 MB */
+function copySessionOnly(srcRoot, destRoot) {
+  fs.mkdirSync(destRoot, { recursive: true });
+  if (!fs.existsSync(srcRoot)) return;
+  for (const rel of SESSION_KEEP_RELS) {
+    const parts = String(rel).split('/').filter(Boolean);
+    const from = path.join(srcRoot, ...parts);
+    if (!fs.existsSync(from)) continue;
+    const to = path.join(destRoot, ...parts);
+    let st;
+    try {
+      st = fs.lstatSync(from);
+    } catch {
+      continue;
+    }
+    if (st.isSymbolicLink()) continue;
+    if (st.isDirectory()) {
+      copyDirFiltered(from, to);
+    } else if (st.isFile()) {
+      fs.mkdirSync(path.dirname(to), { recursive: true });
+      fs.copyFileSync(from, to);
+    }
+  }
+}
+
 function dirSize(dir) {
   let n = 0;
   const walk = (d) => {
@@ -274,7 +336,8 @@ function exportProfilePack(profileId, { closeFirst } = {}) {
     const stage = path.join(work, 'stage');
     fs.mkdirSync(stage, { recursive: true });
     fs.writeFileSync(path.join(stage, 'meta.json'), JSON.stringify(meta, null, 2), 'utf8');
-    copyDirFiltered(profileRoot(id), path.join(stage, 'userdata'));
+    // 会话白名单：不打 Cache / IndexedDB / Service Worker 等
+    copySessionOnly(profileRoot(id), path.join(stage, 'userdata'));
 
     const packed = createTgzFromDir(stage, asciiTgz);
     const st = fs.statSync(asciiTgz);

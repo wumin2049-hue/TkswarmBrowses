@@ -81,6 +81,14 @@ const LOADING_HTML = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>�
   + '<div><i></i>正在打开页面，请稍候…</div></body></html>';
 
 async function loadBuiltinHtml(browserWindow, html) {
+  // 优先 file:：CDP/省流若误拦 data: 会把 HTML 渲成纯文本乱码
+  try {
+    const id = String(browserWindow.__tkProfileId || 'status');
+    const file = writeStatusHtml(id, html);
+    const { pathToFileURL } = require('node:url');
+    await browserWindow.loadURL(pathToFileURL(file).href);
+    return;
+  } catch { /* fall through */ }
   try {
     return await browserWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
   } catch (error) {
@@ -90,17 +98,17 @@ async function loadBuiltinHtml(browserWindow, html) {
 
 async function loadStatusPage(win, profileId, html) {
   try {
-    await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
-    return;
-  } catch (error) {
-    appendEnvLog(profileId, `data: URL 失败（${error?.message || error}），回退 file:`);
-  }
-  try {
     const file = writeStatusHtml(profileId, html);
     const { pathToFileURL } = require('node:url');
     await win.loadURL(pathToFileURL(file).href);
+    return;
   } catch (error) {
-    appendEnvLog(profileId, `file: URL 失败（${error?.message || error}）`);
+    appendEnvLog(profileId, `file: URL 失败（${error?.message || error}），回退 data:`);
+  }
+  try {
+    await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+  } catch (error) {
+    appendEnvLog(profileId, `data: URL 失败（${error?.message || error}）`);
     await loadBuiltinHtml(win, html);
   }
 }
@@ -169,19 +177,19 @@ async function loadStatusPageOnWebContents(webContents, profileId, html) {
     await new Promise((r) => setTimeout(r, 80));
   } catch { /* */ }
   try {
-    await webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+    const file = writeStatusHtml(profileId, html);
+    const { pathToFileURL } = require('node:url');
+    await webContents.loadURL(pathToFileURL(file).href);
     return;
+  } catch (error) {
+    appendEnvLog(profileId, `状态页 file: 失败: ${error?.message || error}`);
+  }
+  try {
+    await webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
   } catch (error) {
     const msg = String(error?.message || error);
     if (msg.includes('ERR_ABORTED') || msg.includes('(-3)')) return;
     appendEnvLog(profileId, `状态页 data: 失败: ${msg}`);
-  }
-  try {
-    const file = writeStatusHtml(profileId, html);
-    const { pathToFileURL } = require('node:url');
-    await webContents.loadURL(pathToFileURL(file).href);
-  } catch (error) {
-    appendEnvLog(profileId, `状态页 file: 失败: ${error?.message || error}`);
   }
 }
 
