@@ -451,10 +451,21 @@ function createRouter() {
       const row = db.getProfile(id);
       const gate = assertProfileOwner(req.currentUser, row, { write: true });
       if (!gate.ok) return res.json(fail(gate.msg));
-      if (manager.getSession(id)) {
+      // live=true：窗口保持打开，先刷盘再在线打包（登录后排队接力场景，不能关窗）
+      const live = req.body?.live === true || req.body?.live === 1 || req.body?.live === '1';
+      if (live) {
+        const sess = manager.getSession(id);
+        if (sess?.inProcess) {
+          const { flushInProcessSession } = require('../browser/env-session-host');
+          await flushInProcessSession(id).catch(() => {});
+        } else {
+          // 子进程窗口：由子进程自身定时/防抖刷盘，这里多等一会儿让最新 Cookie 落盘
+          await new Promise((r) => setTimeout(r, 1800));
+        }
+      } else if (manager.getSession(id)) {
         await manager.closeProfile(id).catch(() => {});
       }
-      const pack = exportProfilePack(id, { closeFirst: true });
+      const pack = exportProfilePack(id, { closeFirst: !live });
       res.json(ok({
         id,
         filePath: pack.filePath,

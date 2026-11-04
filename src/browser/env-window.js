@@ -375,6 +375,23 @@ app.whenReady().then(async () => {
   contentWc?.on('responsive', () => logLine('窗口恢复响应'));
   logLine('环境浏览器外壳已就绪');
 
+  // 在线导出环境包（live，不关窗）依赖磁盘上的 Cookie/Storage 是最新的：
+  // Cookie 变化后防抖刷盘 + 兜底定时刷盘，让登录凭证尽快落盘。
+  const flushSessionToDisk = () => {
+    try { contentSes.cookies.flushStore().catch(() => {}); } catch { /* */ }
+    try { contentSes.flushStorageData(); } catch { /* */ }
+  };
+  let flushDebounce = null;
+  try {
+    contentSes.cookies.on('changed', () => {
+      clearTimeout(flushDebounce);
+      flushDebounce = setTimeout(flushSessionToDisk, 800);
+    });
+  } catch { /* */ }
+  const flushTimer = setInterval(flushSessionToDisk, 5000);
+  flushTimer.unref?.();
+  win.on('closed', () => { clearInterval(flushTimer); clearTimeout(flushDebounce); });
+
   // 上游代理自检：延后到首屏之后，避免和 TikTok 抢代理连接槽（卡顿主因之一）
   if (cfg.proxyMeta?.proxy_host) {
     const probeDelayMs = Math.max(0, Number(process.env.TKSWARM_PROXY_PROBE_DELAY_MS || 25000) || 25000);

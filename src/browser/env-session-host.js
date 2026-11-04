@@ -217,6 +217,7 @@ async function launchProfileInProcess(profile, options = {}) {
     chrome,
     releaseProxy: proxy.release,
     profile,
+    contentSession: contentSes,
     getContentWc: () => chrome.getActiveWebContents(),
   });
   appendEnvLog(id, `CDP 就绪 ws=${page.webSocketDebuggerUrl} url=${page.url || ''}`);
@@ -262,6 +263,17 @@ async function closeInProcessWindow(profileId) {
   return { ok: true };
 }
 
+/** 不关窗：把内容 session 的 Cookie / Storage 刷到磁盘，供在线导出环境包 */
+async function flushInProcessSession(profileId) {
+  const rec = windows.get(String(profileId));
+  const ses = rec?.contentSession;
+  if (!ses) return false;
+  try { await ses.cookies.flushStore(); } catch { /* */ }
+  try { ses.flushStorageData(); } catch { /* */ }
+  await new Promise((r) => setTimeout(r, 400));
+  return true;
+}
+
 function isInProcessAlive(session) {
   return Boolean(session?.inProcess && session.window && !session.window.isDestroyed());
 }
@@ -270,6 +282,7 @@ module.exports = {
   initEnvSessionHost,
   launchProfileInProcess,
   closeInProcessWindow,
+  flushInProcessSession,
   isInProcessAlive,
   getMainCdpPort: () => mainCdpPort,
 };
