@@ -217,6 +217,24 @@ async function inspectBlankContentOnWc(webContents, profileId, opts, attempt = 0
   }
   if (!info) return false;
   appendEnvLog(profileId, `内容检查 href=${info.href} 文本=${info.text} 子节点=${info.html} 元素=${info.nodes}`);
+  const href = String(info.href || '');
+  const intended = String(opts?.url || '').trim();
+  // 仍停在 about:blank：不是「内容为空」，而是目标页根本没打开（代理/导航失败）
+  if (!href || href === 'about:blank' || href === 'about:srcdoc') {
+    if (attempt < 1) {
+      await new Promise((r) => setTimeout(r, 8000));
+      return inspectBlankContentOnWc(webContents, profileId, opts, attempt + 1);
+    }
+    await showDiagnosticOnWebContents(webContents, profileId, {
+      ...opts,
+      reason: '仍停留在 about:blank，目标页未打开',
+      detail: intended
+        ? `本应打开 ${intended}；常见原因：上游代理不通、代理握手失败、或首次导航被中断。请看下方「代理自检」与日志。`
+        : `元素 ${info.nodes} / 文本 ${info.text}（${href || 'about:blank'}）`,
+      url: intended || href || 'about:blank',
+    });
+    return true;
+  }
   // 有实质 DOM / 文本即视为非空；阈值按元素数而非 outerHTML 字符
   if ((info.nodes || 0) < 8 && (info.text || 0) < 40) {
     if (attempt < 1) {
@@ -226,8 +244,8 @@ async function inspectBlankContentOnWc(webContents, profileId, opts, attempt = 0
     await showDiagnosticOnWebContents(webContents, profileId, {
       ...opts,
       reason: '页面已加载，但内容为空',
-      detail: `元素 ${info.nodes} / 文本 ${info.text}（${info.href}）`,
-      url: info.href,
+      detail: `元素 ${info.nodes} / 文本 ${info.text}（${href}）`,
+      url: href || intended,
     });
     return true;
   }

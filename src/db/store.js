@@ -272,8 +272,8 @@ function setProfileStatus(id, status) {
   withStore((data) => {
     const p = data.profiles.find((x) => x.id === String(id));
     if (p) {
+      // 仅状态变化，不刷新 updated_at：否则 openProfile 会把它当成「元数据更新」而关窗重开
       p.status = status;
-      p.updated_at = new Date().toISOString();
     }
   });
 }

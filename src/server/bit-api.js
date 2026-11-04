@@ -324,6 +324,12 @@ function createRouter() {
         if (!gate.ok) return res.json(fail(gate.msg));
         const fp = JSON.parse(row.fingerprint_json || '{}');
         const resolved = await resolveGeoFromProxy(proxyFields, fp, {});
+        // 代理没变就不要关窗：每次登录前都会同步一次代理，无变化时关窗会让已打开的环境消失
+        const proxyChanged = String(row.proxy_type || 'noproxy') !== proxyType
+          || String(row.proxy_host || '') !== host
+          || Number(row.proxy_port || 0) !== port
+          || (proxyUserName !== '' && String(row.proxy_user || '') !== String(proxyUserName))
+          || (proxyPassword !== '' && String(row.proxy_pass || '') !== String(proxyPassword));
         lastIp = resolved.lastIp;
         fields = resolved.fields;
         db.updateProfileProxy(id, {
@@ -339,7 +345,7 @@ function createRouter() {
           longitude: fields.longitude,
           country: fields.country,
         });
-        if (manager.getSession(id)) {
+        if (proxyChanged && manager.getSession(id)) {
           await manager.closeProfile(id).catch(() => {});
         }
       }
