@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>第一页自研浏览器</title>
+  <title>指纹浏览器控制台</title>
   <link rel="icon" type="image/png" href="assets/app-icon.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css?v=3.1" />
-  <link rel="stylesheet" href="theme-premium.css?v=2.1" />
+  <link rel="stylesheet" href="style.css?v=3.2" />
+  <link rel="stylesheet" href="theme-premium.css?v=2.2" />
 </head>
 <body>
   <div class="bg-decor" aria-hidden="true">
@@ -23,7 +23,6 @@
       <div class="brand">
         <img class="logo-img" src="assets/app-icon.png" width="44" height="44" alt="" />
         <div class="brand-text">
-          <h1 class="brand-name">第一页自研浏览器</h1>
           <p class="sub">本机 API <code id="api-url">http://127.0.0.1:54345</code> · 比特协议兼容</p>
         </div>
       </div>
@@ -230,7 +229,14 @@
             <button id="btn-refresh" class="btn ghost" type="button">刷新</button>
           </div>
           <div class="table-scroll">
-            <table class="win-table">
+            <table class="win-table win-table-windows">
+              <colgroup>
+                <col style="width:22%" />
+                <col style="width:28%" />
+                <col style="width:12%" />
+                <col style="width:14%" />
+                <col style="width:24%" />
+              </colgroup>
               <thead>
                 <tr>
                   <th>环境 ID</th>
@@ -265,7 +271,15 @@
             <span id="profile-count" class="toolbar-meta">0 条</span>
           </div>
           <div class="table-scroll">
-            <table class="win-table">
+            <table class="win-table win-table-profiles">
+              <colgroup>
+                <col style="width:14%" />
+                <col style="width:26%" />
+                <col style="width:12%" />
+                <col style="width:26%" />
+                <col style="width:14%" />
+                <col style="width:8%" />
+              </colgroup>
               <thead>
                 <tr>
                   <th>ID</th>
@@ -297,6 +311,6 @@
     </section>
   </div>
   <div id="toast-host" aria-live="polite" aria-relevant="additions"></div>
-  <script src="app.js?v=2.0"></script>
+  <script src="app.js?v=2.1"></script>
 </body>
 </html>

@@ -61,6 +61,9 @@ body {
 
 /* ---------- 导航顶栏 ---------- */
 .topbar {
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 30 !important;
   padding: 11px var(--page-pad-x, 28px) !important;
   background: rgba(255, 255, 255, 0.86) !important;
   border-bottom: 1px solid rgba(228, 233, 240, 0.95) !important;
@@ -92,11 +95,12 @@ body {
 }
 
 .brand-name {
-  background: linear-gradient(105deg, #0b1220 28%, #1d4ed8 78%, #0891b2);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  font-size: 17.5px !important;
+  display: none !important;
+}
+
+.brand-text .sub {
+  margin: 0 !important;
+  max-width: min(58vw, 520px) !important;
 }
 
 .sub {
@@ -208,6 +212,12 @@ body {
   padding-top: 40px !important;
 }
 
+.login-layout {
+  max-width: 1100px !important;
+  margin: 0 auto !important;
+  align-items: center !important;
+}
+
 .login-card-premium {
   border-radius: 20px !important;
   padding: 34px 30px 30px !important;
@@ -273,10 +283,10 @@ body {
 .feature-list li:nth-child(3) { border-left: 3px solid #4f46e5; }
 
 .hero-title {
-  background: linear-gradient(120deg, #0b1220 20%, #1e3a8a 70%, #0e7490);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: #0b1220 !important;
+  background: none !important;
+  -webkit-background-clip: unset !important;
+  background-clip: unset !important;
 }
 
 /* ---------- 欢迎横幅 ---------- */
@@ -533,6 +543,7 @@ body {
   box-shadow: var(--px-shadow) !important;
   margin-bottom: 16px !important;
   background: #fff !important;
+  display: block !important;
 }
 
 .panel::before {
@@ -627,11 +638,37 @@ body {
 .table-scroll {
   margin: 0 !important;
   padding: 8px 14px 14px !important;
+  overflow-x: auto !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
 }
 
 /* ---------- 表格列表 ---------- */
 .win-table {
-  min-width: 640px !important;
+  display: table !important;
+  width: 100% !important;
+  min-width: 720px !important;
+  table-layout: fixed !important;
+  border-collapse: separate !important;
+  border-spacing: 0 !important;
+}
+
+.win-table thead {
+  display: table-header-group !important;
+}
+
+.win-table tbody {
+  display: table-row-group !important;
+}
+
+.win-table tr {
+  display: table-row !important;
+}
+
+.win-table thead th,
+.win-table tbody td {
+  display: table-cell !important;
+  vertical-align: middle !important;
 }
 
 .win-table thead th {
@@ -641,6 +678,8 @@ body {
   letter-spacing: 0.06em !important;
   padding: 10px 12px !important;
   border-bottom: none !important;
+  white-space: nowrap !important;
+  position: static !important;
 }
 
 .win-table thead th:first-child {
@@ -651,11 +690,14 @@ body {
 }
 
 .win-table tbody td {
-  height: 50px;
+  height: auto !important;
+  min-height: 48px;
   padding: 11px 12px !important;
   border-bottom: 1px solid #f1f5f9 !important;
   color: var(--px-text);
   font-size: 13px !important;
+  overflow: hidden;
+  word-break: break-word;
 }
 
 .win-table tbody tr {
@@ -671,10 +713,44 @@ body {
 }
 
 .win-table code {
+  display: inline-block !important;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
   background: #f1f5f9 !important;
   border-color: #e2e8f0 !important;
   font-size: 11px !important;
   padding: 3px 7px !important;
+}
+
+.win-table .tag {
+  display: inline-flex !important;
+  white-space: nowrap !important;
+}
+
+.win-table .status-dot {
+  display: inline-flex !important;
+  white-space: nowrap !important;
+}
+
+.win-table .cell-proxy {
+  display: flex !important;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.win-table .cell-proxy-host {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
 }
 
 .row-actions {

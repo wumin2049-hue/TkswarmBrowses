@@ -114,12 +114,12 @@ function renderSystemPills(sys) {
 function proxyTag(p) {
   const type = String(p.proxyType || 'noproxy').toLowerCase();
   if (type === 'noproxy' || !type) {
-    return '<span class="tag noproxy">直连</span>';
+    return '<span class="cell-proxy"><span class="tag noproxy">直连</span></span>';
   }
   const host = [p.host, p.port].filter(Boolean).join(':');
-  return `<span class="tag proxy">${esc(type)}</span>${host ? ` <span class="muted">${esc(host)}</span>` : ''}${
-    p.lastIp ? `<div class="cell-sub">IP ${esc(p.lastIp)}</div>` : ''
-  }`;
+  return `<span class="cell-proxy"><span class="tag proxy">${esc(type)}</span>${
+    host ? `<span class="muted cell-proxy-host">${esc(host)}</span>` : ''
+  }${p.lastIp ? `<span class="cell-sub">IP ${esc(p.lastIp)}</span>` : ''}</span>`;
 }
 
 function renderProfileRows(list) {

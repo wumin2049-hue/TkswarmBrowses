@@ -52,10 +52,10 @@ function buildMainAppMenu(opts = {}) {
   const product = '第一页自研浏览器';
   const template = [
     {
-      label: product,
+      label: '应用',
       submenu: [
         {
-          label: '关于第一页自研浏览器',
+          label: '关于',
           click: () => {
             dialog.showMessageBox({
               type: 'info',
