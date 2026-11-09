@@ -172,8 +172,8 @@ function sendEmulationOnWs(wsUrl, {
           platform: String(platform || 'Win32'),
           ...(userAgentMetadata ? { userAgentMetadata } : {}),
         };
+        // 仅用 Emulation 一处覆盖（同时作用于 navigator、请求头与 Client Hints），不再重复发 Network 覆盖
         send('Emulation.setUserAgentOverride', uaParams);
-        send('Network.setUserAgentOverride', uaParams);
       }
       if (timezone) send('Emulation.setTimezoneOverride', { timezoneId: timezone });
       if (locale) send('Emulation.setLocaleOverride', { locale });
