@@ -24,8 +24,13 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
       - name: Install & build Windows (NSIS + portable)
+        env:
+          # 确保安装 sharp / electron-builder 等打包依赖（避免 omit=dev）
+          NPM_CONFIG_INCLUDE: dev
+          npm_config_registry: https://registry.npmjs.org/
         run: |
           npm ci
+          node -e "require('fs').accessSync('build/icon.ico'); require('fs').accessSync('build/icon.png'); console.log('icons ok')"
           npm run icons
           npm run dist:win
       - name: Verify Windows artifacts
@@ -88,8 +93,12 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
       - name: Install & build macOS (DMG + ZIP, x64 + arm64)
+        env:
+          NPM_CONFIG_INCLUDE: dev
+          npm_config_registry: https://registry.npmjs.org/
         run: |
           npm ci
+          node -e "require('fs').accessSync('build/icon.ico'); require('fs').accessSync('build/icon.png'); console.log('icons ok')"
           npm run icons
           npm run dist:mac
       - name: Verify macOS artifacts
