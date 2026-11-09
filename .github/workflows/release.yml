@@ -12,6 +12,11 @@ permissions:
 
 env:
   CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+  # Electron / electron-builder 二进制走国内镜像，避免 GitHub CDN 504
+  ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
+  ELECTRON_BUILDER_BINARIES_MIRROR: https://npmmirror.com/mirrors/electron-builder-binaries/
+  NPM_CONFIG_INCLUDE: dev
+  npm_config_registry: https://registry.npmjs.org/
 
 jobs:
   build-win:
@@ -23,16 +28,37 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: package-lock.json
-      - name: Install & build Windows (NSIS + portable)
-        env:
-          # 确保安装 sharp / electron-builder 等打包依赖（避免 omit=dev）
-          NPM_CONFIG_INCLUDE: dev
-          npm_config_registry: https://registry.npmjs.org/
+
+      - name: Install dependencies (retry)
+        shell: bash
         run: |
-          npm ci
+          set -euo pipefail
+          for i in 1 2 3; do
+            echo "==> npm ci attempt $i"
+            if npm ci; then
+              break
+            fi
+            echo "npm ci failed (attempt $i), cleaning and retrying..."
+            rm -rf node_modules
+            if [ "$i" -eq 3 ]; then
+              echo "npm ci failed after 3 attempts" >&2
+              exit 1
+            fi
+            sleep $((i * 20))
+          done
+          test -d node_modules/electron
+          test -d node_modules/electron-builder
+          node -e "require('electron'); console.log('electron package ok')"
+          npx electron-builder --version
+
+      - name: Build Windows (NSIS + portable)
+        shell: bash
+        run: |
+          set -euo pipefail
           node -e "require('fs').accessSync('build/icon.ico'); require('fs').accessSync('build/icon.png'); console.log('icons ok')"
           npm run icons
-          npm run dist:win
+          npx electron-builder --win --publish never
+
       - name: Verify Windows artifacts
         shell: pwsh
         run: |
@@ -92,15 +118,37 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: package-lock.json
-      - name: Install & build macOS (DMG + ZIP, x64 + arm64)
-        env:
-          NPM_CONFIG_INCLUDE: dev
-          npm_config_registry: https://registry.npmjs.org/
+
+      - name: Install dependencies (retry)
+        shell: bash
         run: |
-          npm ci
+          set -euo pipefail
+          for i in 1 2 3; do
+            echo "==> npm ci attempt $i"
+            if npm ci; then
+              break
+            fi
+            echo "npm ci failed (attempt $i), cleaning and retrying..."
+            rm -rf node_modules
+            if [ "$i" -eq 3 ]; then
+              echo "npm ci failed after 3 attempts" >&2
+              exit 1
+            fi
+            sleep $((i * 20))
+          done
+          test -d node_modules/electron
+          test -d node_modules/electron-builder
+          node -e "require('electron'); console.log('electron package ok')"
+          npx electron-builder --version
+
+      - name: Build macOS (DMG + ZIP, x64 + arm64)
+        shell: bash
+        run: |
+          set -euo pipefail
           node -e "require('fs').accessSync('build/icon.ico'); require('fs').accessSync('build/icon.png'); console.log('icons ok')"
           npm run icons
-          npm run dist:mac
+          npx electron-builder --mac --publish never
+
       - name: Verify macOS artifacts
         run: |
           echo "=== dist/ ==="
