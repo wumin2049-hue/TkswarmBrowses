@@ -50,16 +50,24 @@ router.get('/api/system/info', (req, res) => {
   });
 });
 
-router.get('/api/dashboard/stats', (req, res) => {
+router.get('/api/dashboard/stats', async (req, res) => {
   const user = db.getCurrentUser();
   if (!user) return res.json({ ok: false, message: '未登录' });
-  const self = db.statsForOwner(user.id);
-  const children = auth.fetchChildrenStats(user).catch?.(() => []) || [];
+  const children = await auth.fetchChildrenStats(user).catch(() => []);
+  const freshUser = db.getCurrentUser() || user;
+  const self = db.statsForOwner(freshUser.id);
   res.json({
     ok: true,
-    user: { id: user.id, username: user.username, nickname: user.nickname, role: user.role_name },
+    user: {
+      id: freshUser.id,
+      username: freshUser.username,
+      nickname: freshUser.nickname,
+      role: freshUser.role_name,
+      browserEnvQuota: freshUser.browser_env_quota,
+      browserEnvUsed: freshUser.browser_env_used,
+    },
     self,
-    children: typeof children.then === 'function' ? [] : children,
+    children,
     windows: manager.listWindows(),
   });
 });
@@ -68,11 +76,19 @@ router.get('/api/dashboard/stats/async', async (req, res) => {
   const user = db.getCurrentUser();
   if (!user) return res.json({ ok: false, message: '未登录' });
   const children = await auth.fetchChildrenStats(user);
+  const freshUser = db.getCurrentUser() || user;
   res.json({
     ok: true,
-    user: { id: user.id, username: user.username, nickname: user.nickname, role: user.role_name },
-    token: user.token || '',
-    self: db.statsForOwner(user.id),
+    user: {
+      id: freshUser.id,
+      username: freshUser.username,
+      nickname: freshUser.nickname,
+      role: freshUser.role_name,
+      browserEnvQuota: freshUser.browser_env_quota,
+      browserEnvUsed: freshUser.browser_env_used,
+    },
+    token: freshUser.token || '',
+    self: db.statsForOwner(freshUser.id),
     children,
     windows: manager.listWindows(),
   });

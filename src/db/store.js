@@ -35,8 +35,19 @@ function countProfilesByOwner(ownerId) {
 }
 
 function resolveEnvLimit(ownerId, overrideLimit) {
-  const o = Number(overrideLimit);
-  if (Number.isFinite(o) && o > 0) return Math.floor(o);
+  if (overrideLimit !== undefined && overrideLimit !== null && overrideLimit !== '') {
+    const o = Number(overrideLimit);
+    if (Number.isFinite(o) && o >= 0) return Math.floor(o);
+  }
+  const oid = Number(ownerId || 0);
+  if (oid > 0) {
+    const user = readOnly((d) => (d.users || []).find((u) => Number(u.id) === oid));
+    const uq = user?.browser_env_quota ?? user?.browserEnvQuota;
+    if (uq !== undefined && uq !== null && uq !== '') {
+      const n = Number(uq);
+      if (Number.isFinite(n) && n >= 0) return Math.floor(n);
+    }
+  }
   return MAX_ENVS_PER_USER;
 }
 
@@ -281,15 +292,24 @@ function setProfileStatus(id, status) {
 function saveUser(user) {
   withStore((data) => {
     const idx = data.users.findIndex((u) => Number(u.id) === Number(user.id));
+    const prev = idx >= 0 ? data.users[idx] : {};
+    const rawQuota = user.browser_env_quota ?? user.browserEnvQuota ?? prev.browser_env_quota;
+    const rawUsed = user.browser_env_used ?? user.browserEnvUsed ?? prev.browser_env_used;
     const row = {
       id: Number(user.id),
-      username: user.username,
-      nickname: user.nickname || '',
-      token: user.token || '',
-      role_name: user.role_name || '',
-      is_super: user.is_super ? 1 : 0,
-      parent_id: Number(user.parent_id || 0),
-      logged_in_at: new Date().toISOString(),
+      username: user.username ?? prev.username ?? '',
+      nickname: user.nickname ?? prev.nickname ?? '',
+      token: user.token ?? prev.token ?? '',
+      role_name: user.role_name ?? prev.role_name ?? '',
+      is_super: (user.is_super !== undefined ? user.is_super : prev.is_super) ? 1 : 0,
+      parent_id: Number(user.parent_id ?? prev.parent_id ?? 0),
+      browser_env_quota: rawQuota !== undefined && rawQuota !== null && Number.isFinite(Number(rawQuota))
+        ? Math.max(0, Math.floor(Number(rawQuota)))
+        : undefined,
+      browser_env_used: rawUsed !== undefined && rawUsed !== null && Number.isFinite(Number(rawUsed))
+        ? Math.max(0, Math.floor(Number(rawUsed)))
+        : undefined,
+      logged_in_at: user.preserveLoginTime && prev.logged_in_at ? prev.logged_in_at : new Date().toISOString(),
     };
     if (idx >= 0) data.users[idx] = row;
     else data.users.push(row);
@@ -318,9 +338,20 @@ function listSessionTokens() {
 }
 
 function statsForOwner(ownerId, overrideLimit) {
-  const used = countProfilesByOwner(ownerId);
+  const localUsed = countProfilesByOwner(ownerId);
+  const oid = Number(ownerId || 0);
+  const user = oid > 0 ? readOnly((d) => (d.users || []).find((u) => Number(u.id) === oid)) : null;
+  const remoteUsed = Number(user?.browser_env_used);
+  const used = Number.isFinite(remoteUsed) && remoteUsed >= 0 ? Math.max(localUsed, remoteUsed) : localUsed;
   const limit = resolveEnvLimit(ownerId, overrideLimit);
-  return { ownerId, used, limit, remaining: Math.max(0, limit - used) };
+  return {
+    ownerId,
+    used,
+    localUsed,
+    remoteUsed: Number.isFinite(remoteUsed) && remoteUsed >= 0 ? remoteUsed : undefined,
+    limit,
+    remaining: Math.max(0, limit - used),
+  };
 }
 
 function statsAllOwners() {
@@ -328,7 +359,12 @@ function statsAllOwners() {
     const map = {};
     for (const p of d.profiles) {
       const oid = Number(p.owner_id);
-      if (!map[oid]) map[oid] = { ownerId: oid, used: 0, limit: MAX_ENVS_PER_USER };
+      if (!map[oid]) {
+        const u = (d.users || []).find((x) => Number(x.id) === oid);
+        const uq = Number(u?.browser_env_quota);
+        const lim = Number.isFinite(uq) && uq >= 0 ? Math.floor(uq) : MAX_ENVS_PER_USER;
+        map[oid] = { ownerId: oid, used: 0, limit: lim };
+      }
       map[oid].used += 1;
     }
     return map;

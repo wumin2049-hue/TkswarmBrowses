@@ -5,7 +5,7 @@ const http = require('node:http');
 const net = require('node:net');
 const { PROFILES_DIR } = require('../config');
 const { resolveChromeExecutable } = require('./chrome-path');
-const { mergeFingerprint, parseResolution, buildUserAgent } = require('./fingerprint');
+const { mergeFingerprint, parseResolution, buildUserAgent, buildUserAgentMetadata } = require('./fingerprint');
 const { buildInjectScript } = require('./fp-inject');
 const { injectFingerprintOnNewDocument, applyEmulation } = require('./cdp-inject');
 const { resolveChromeProxy } = require('./proxy-auth');
@@ -183,8 +183,10 @@ async function launchProfile(profile, options = {}) {
     await waitForPageTarget(port, 6000);
 
     // Canvas / WebGL / WebRTC 深度指纹：CDP 注入（失败则短重试）
+    const userAgentMetadata = buildUserAgentMetadata(fp);
     const injectSrc = buildInjectScript(profile.id, {
       ...fp,
+      userAgent,
       languages: locale,
       os: fp.os,
     });
@@ -194,7 +196,15 @@ async function launchProfile(profile, options = {}) {
       injected = Boolean(r?.ok);
       if (!injected) await new Promise((r) => setTimeout(r, 200));
     }
-    await applyEmulation(port, { timezone, locale, latitude, longitude }).catch(() => null);
+    await applyEmulation(port, {
+      timezone,
+      locale,
+      latitude,
+      longitude,
+      userAgent,
+      platform: fp.os,
+      userAgentMetadata,
+    }).catch(() => null);
   };
 
   const base = {
