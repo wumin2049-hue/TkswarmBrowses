@@ -5,14 +5,27 @@
 const WIN_FEATURES = ['RendererCodeIntegrity', 'CalculateNativeWinOcclusion', 'Vulkan'];
 
 /**
- * 必须关闭的 blink 自动化特性。
+ * 必须关闭的 Chromium 特性。
  *
- * AutomationControlled 启用时 `navigator.webdriver === true`，
- * 这是风控最容易直接抓到的一条自动化特征：TikTok 注册页读一次就能拒绝，
- * 要求「Continue on the TikTok app」扫码验证。
- * 必须在 Chromium 启动前关掉，靠 JS 事后涂抹会被 getter 特征反查。
+ * AutomationControlled：开启时 navigator.webdriver === true，是最容易被抓的自动化特征。
+ * AsyncDns：异步 DNS 会在**本地**发起解析请求。虽然走 SOCKS5 时 Chromium 会把域名交给
+ *   代理解析（远程 DNS），但 AsyncDns 的本地探测仍可能把真实 ISP 的 DNS 暴露出去，
+ *   让「声称在海外」的环境在 DNS 层面漏出本地归属。关掉后统一由代理侧解析。
  */
-const DISABLED_BLINK_FEATURES = ['AutomationControlled'];
+const DISABLED_FEATURES = ['AutomationControlled', 'AsyncDns'];
+
+/**
+ * DNS 防泄露启动参数。
+ *
+ * 为什么需要：SOCKS5 转发时 Chromium 用 ATYP=域名 交给上游解析（远程 DNS，正确），
+ * 但 Chromium 自己还会做 DNS **预取**（预测用户可能要访问的域名并提前解析），
+ * 这一步走的是本机系统 DNS。结果是：环境声称在洛杉矶，本地 DNS 却向中国 ISP 查询了 tiktok.com。
+ * 关闭预取 + 关闭异步 DNS，让解析完全落到代理侧。
+ */
+const DNS_LEAK_GUARD_ARGS = [
+  '--dns-prefetch-disable',
+  '--disable-features=AsyncDns,PrefetchDNS',
+];
 
 /**
  * @param {{ softwareRender?: boolean, disableSandbox?: boolean, profileId?: string }} options
@@ -34,10 +47,13 @@ function buildChildChromiumArgv(options = {}) {
     '--disable-renderer-backgrounding',
     '--disable-backgrounding-occluded-windows',
     '--remote-allow-origins=*',
-    `--disable-features=${WIN_FEATURES.join(',')}`,
+    // 注意：Chromium 只认最后一个 --disable-features，这里合并成一条
+    `--disable-features=${WIN_FEATURES.join(',')},${DISABLED_FEATURES.join(',')}`,
     // 去掉 navigator.webdriver=true 与「正受自动化软件控制」相关差异
-    `--disable-blink-features=${DISABLED_BLINK_FEATURES.join(',')}`,
+    '--disable-blink-features=AutomationControlled',
     '--excludeSwitches=enable-automation',
+    // DNS 防泄露：禁止预取与异步解析，把域名解析交给代理侧完成
+    ...DNS_LEAK_GUARD_ARGS.filter((a) => !a.startsWith('--disable-features=')),
   ];
 
   if (disableSandbox) {
@@ -96,6 +112,8 @@ function bootFingerprint() {
 module.exports = {
   buildChildChromiumArgv,
   applyChromiumArgvToApp,
+  DISABLED_FEATURES,
+  DNS_LEAK_GUARD_ARGS,
   bootFingerprint,
   WIN_FEATURES,
 };

@@ -151,6 +151,10 @@ async function launchProfile(profile, options = {}) {
     '--disable-blink-features=AutomationControlled',
     // 去掉「Chrome 正受自动化软件控制」开关带来的其他差异
     '--excludeSwitches=enable-automation',
+    // DNS 防泄露：AsyncDns 会在本地发起解析，暴露真实 ISP 归属。
+    // 关掉后统一由 SOCKS5 上游（ATYP=域名）远程解析，DNS 与 IP 归属一致。
+    '--disable-features=AsyncDns,PrefetchDNS',
+    '--dns-prefetch-disable',
     // WebRTC：禁止非代理 UDP，降低真实 IP 泄露
     '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
     '--enforce-webrtc-ip-permission-check',
