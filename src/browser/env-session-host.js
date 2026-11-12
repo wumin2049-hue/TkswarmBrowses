@@ -217,7 +217,7 @@ async function launchProfileInProcess(profile, options = {}) {
     ensureContentProxy,
     onContentWebContents: (wc) => {
       bindContentEvents(wc);
-      return applyEmulationToWc(wc, emulationOpts, (msg) => appendEnvLog(id, msg));
+      applyEmulationToWc(wc, emulationOpts, (msg) => appendEnvLog(id, msg));
     },
     headless,
     log: (msg) => appendEnvLog(id, msg),

@@ -63,77 +63,84 @@ function acceptLanguageOf(locale) {
 }
 
 /**
- * 在标签页首次导航前调用。返回的 Promise 在所有覆盖下发完成后 resolve（失败项只记日志）。
+ * 在标签页「首次导航开始」时下发覆盖，不阻塞、不预加载、不竞态。
+ *
+ * 时序要点（这是踩过两次坑后定下来的）：
+ *   1. 新建的 BrowserView 还没有渲染进程，任何 debugger 命令都会挂起（v1.0.58 卡 90 秒）。
+ *   2. 预加载 about:blank 会与真正的 loadURL 抢导航，页面停在 about:blank 永不前进（v1.0.59）。
+ *   3. 正确时机是 did-start-navigation：此刻渲染进程已建、导航刚发起、页面 JS 尚未执行。
+ *      在这里下发 Emulation 覆盖既不会挂起，又能赶在首屏 JS 读取时区/语言之前生效。
+ *
+ * 因此本函数不再 await 任何导航，立刻返回；覆盖在首次 did-start-navigation 里异步完成。
+ *
  * @param {Electron.WebContents} wc
  * @param {ReturnType<typeof buildEmulationOpts>} opts
  * @param {(msg: string) => void} [log]
+ * @returns {void}
  */
-async function applyEmulationToWc(wc, opts = {}, log = () => {}) {
-  if (!wc || wc.isDestroyed()) return false;
+function applyEmulationToWc(wc, opts = {}, log = () => {}) {
+  if (!wc || wc.isDestroyed()) return;
 
   try { wc.setWebRTCIPHandlingPolicy('disable_non_proxied_udp'); } catch { /* 老版本无此 API */ }
 
-  // 还没有任何导航时渲染进程不存在，debugger 命令会一直挂起（直到页面导航才返回），
-  // 所以先落到 about:blank 把渲染进程建出来，再下发覆盖。
-  try {
-    if (!wc.getURL()) await withTimeout(wc.loadURL('about:blank'), 3000, 'about:blank');
-  } catch (error) {
-    log(`预加载 about:blank 失败（继续尝试下发覆盖）: ${error?.message || error}`);
-  }
+  let done = false;
+  const runOnce = async () => {
+    if (done) return;
+    done = true;
 
-  const dbg = wc.debugger;
-  try {
-    if (!dbg.isAttached()) dbg.attach('1.3');
-  } catch (error) {
-    log(`标签页 debugger 附加失败，地区/指纹覆盖未应用: ${error?.message || error}`);
-    return false;
-  }
-  // 一旦某条命令超时，说明渲染进程不可用，后面的命令不再逐条等待，避免叠加拖慢首屏
-  let dead = false;
-  const send = (method, params = {}) => {
-    if (dead) return Promise.resolve(false);
-    return withTimeout(dbg.sendCommand(method, params), 2500, method).then(
-      () => true,
-      (error) => {
-        log(`${method} 失败: ${error?.message || error}`);
-        if (/超时/.test(String(error?.message || ''))) dead = true;
-        return false;
-      },
-    );
+    const dbg = wc.debugger;
+    try {
+      if (!dbg.isAttached()) dbg.attach('1.3');
+    } catch (error) {
+      log(`标签页 debugger 附加失败，地区/指纹覆盖未应用: ${error?.message || error}`);
+      return;
+    }
+    const send = (method, params = {}) => withTimeout(
+      dbg.sendCommand(method, params), 2500, method,
+    ).then(() => true, (error) => {
+      log(`${method} 失败: ${error?.message || error}`);
+      return false;
+    });
+
+    const applied = [];
+    if (opts.userAgent) {
+      const ok = await send('Emulation.setUserAgentOverride', {
+        userAgent: opts.userAgent,
+        acceptLanguage: acceptLanguageOf(opts.locale),
+        platform: opts.platform || 'Win32',
+        ...(opts.userAgentMetadata ? { userAgentMetadata: opts.userAgentMetadata } : {}),
+      });
+      if (ok) applied.push('UA/ClientHints');
+    }
+    if (opts.timezone && await send('Emulation.setTimezoneOverride', { timezoneId: opts.timezone })) {
+      applied.push(`时区=${opts.timezone}`);
+    }
+    if (opts.locale && await send('Emulation.setLocaleOverride', { locale: String(opts.locale).split(',')[0].trim() })) {
+      applied.push(`语言=${opts.locale}`);
+    }
+    const hasGeo = Number.isFinite(opts.latitude) && Number.isFinite(opts.longitude)
+      && (opts.latitude !== 0 || opts.longitude !== 0);
+    if (hasGeo && await send('Emulation.setGeolocationOverride', {
+      latitude: opts.latitude, longitude: opts.longitude, accuracy: 100,
+    })) {
+      applied.push(`定位=${opts.latitude.toFixed(2)},${opts.longitude.toFixed(2)}`);
+    }
+    if (opts.injectScript && await send('Page.addScriptToEvaluateOnNewDocument', { source: opts.injectScript })) {
+      applied.push('指纹脚本');
+    }
+
+    log(`标签页地区/指纹覆盖已应用: ${applied.join(' | ') || '无'}`
+      + (opts.timezone ? '' : '（⚠ 未解析到代理时区，窗口将使用本机时区）'));
   };
 
-  const applied = [];
-  if (opts.userAgent) {
-    const ok = await send('Emulation.setUserAgentOverride', {
-      userAgent: opts.userAgent,
-      acceptLanguage: acceptLanguageOf(opts.locale),
-      platform: opts.platform || 'Win32',
-      ...(opts.userAgentMetadata ? { userAgentMetadata: opts.userAgentMetadata } : {}),
-    });
-    if (ok) applied.push('UA/ClientHints');
-  }
-  if (opts.timezone && await send('Emulation.setTimezoneOverride', { timezoneId: opts.timezone })) {
-    applied.push(`时区=${opts.timezone}`);
-  }
-  if (opts.locale && await send('Emulation.setLocaleOverride', { locale: String(opts.locale).split(',')[0].trim() })) {
-    applied.push(`语言=${opts.locale}`);
-  }
-  const hasGeo = Number.isFinite(opts.latitude) && Number.isFinite(opts.longitude)
-    && (opts.latitude !== 0 || opts.longitude !== 0);
-  if (hasGeo && await send('Emulation.setGeolocationOverride', {
-    latitude: opts.latitude,
-    longitude: opts.longitude,
-    accuracy: 100,
-  })) {
-    applied.push(`定位=${opts.latitude.toFixed(2)},${opts.longitude.toFixed(2)}`);
-  }
-  if (opts.injectScript && await send('Page.addScriptToEvaluateOnNewDocument', { source: opts.injectScript })) {
-    applied.push('指纹脚本');
-  }
-
-  log(`标签页地区/指纹覆盖已应用: ${applied.join(' | ') || '无'}`
-    + (opts.timezone ? '' : '（⚠ 未解析到代理时区，窗口将使用本机时区）'));
-  return applied.length > 0;
+  // 首次主 frame 导航开始即下发。若首次导航是 about:blank / 本地页，则等下一个真正的导航。
+  wc.on('did-start-navigation', (event) => {
+    if (done) return;
+    if (!event.isMainFrame) return;
+    const url = String(event.url || '');
+    if (url === 'about:blank' || url === 'about:srcdoc' || url.startsWith('file:')) return;
+    void runOnce();
+  });
 }
 
 module.exports = { buildEmulationOpts, applyEmulationToWc, acceptLanguageOf };

@@ -214,8 +214,8 @@ async function createEnvChrome(opts) {
   function wireView(id, view, tab) {
     const wc = view.webContents;
     if (typeof onContentWebContents === 'function') {
-      // 回调可返回 Promise（地区/指纹覆盖），首次导航要等它完成，否则首屏仍是本机时区
-      try { tab.emuReady = Promise.resolve(onContentWebContents(wc)).catch(() => {}); } catch { /* */ }
+      // 地区/指纹覆盖：立即注册 did-start-navigation 监听，随后在首次真实导航时下发（不阻塞加载）
+      try { onContentWebContents(wc); } catch { /* */ }
     }
     // 焦点在内容页时也能 F12 打开调试台
     wc.on('before-input-event', (event, input) => {
@@ -278,9 +278,9 @@ async function createEnvChrome(opts) {
     views.set(id, view);
     wireView(id, view, tab);
     if (activate) switchTab(id);
-    // 地区覆盖最多等 8 秒：即使它出问题，也绝不能拖住首次导航（否则整页超时）
-    const emuGate = Promise.race([tab.emuReady, new Promise((r) => setTimeout(r, 8000))]);
-    void Promise.all([beforeBrowseNav(), emuGate]).then(() => {
+    // 覆盖由 did-start-navigation 触发（见 env-emulation），这里不等待、不预加载，
+    // 直接加载目标页，避免 about:blank 与真实导航抢竞态导致页面停在空白页。
+    void beforeBrowseNav().then(() => {
       view.webContents.loadURL(tab.url).catch((err) => {
         log(`loadURL 失败: ${err?.message || err}`);
       });
