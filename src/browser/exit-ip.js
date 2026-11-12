@@ -1,17 +1,27 @@
 /**
  * 经上游代理探测出口 IP（供 detail / proxy/update 回写）。
+ *
+ * 所有网络步骤都必须有超时：
+ * 代理握手成功但不回数据、或目标端口被代理吞掉时，没有超时会永久挂起，
+ * 进而让 /browser/proxy/update 一直不返回，「打开环境」在 open 之前就卡死。
  */
 const net = require('node:net');
 const http = require('node:http');
 
+const SOCKET_TIMEOUT_MS = 8000;
+const PROBE_HARD_TIMEOUT_MS = 12000;
+
 function socks5Connect(host, port, user, pass, destHost, destPort) {
   return new Promise((resolve, reject) => {
     const sock = net.connect(Number(port), host);
+    sock.setTimeout(SOCKET_TIMEOUT_MS);
     let stage = 'greeting';
     let buf = Buffer.alloc(0);
     const fail = (e) => { try { sock.destroy(); } catch { /* */ } reject(e); };
 
     sock.on('error', fail);
+    sock.on('timeout', () => fail(new Error(`socks5 ${stage} 超时`)));
+    sock.on('close', () => { if (stage !== 'done') fail(new Error(`socks5 ${stage} 连接被关闭`)); });
     sock.on('data', (chunk) => {
       buf = Buffer.concat([buf, chunk]);
       if (stage === 'greeting') {
@@ -43,7 +53,10 @@ function socks5Connect(host, port, user, pass, destHost, destPort) {
       if (stage === 'request') {
         if (buf.length < 4) return;
         if (buf[1] !== 0x00) return fail(new Error('socks connect fail'));
+        stage = 'done';
         sock.removeAllListeners('data');
+        sock.removeAllListeners('timeout');
+        sock.setTimeout(0);
         resolve(sock);
       }
     });
@@ -72,20 +85,35 @@ function httpGetOverSocket(sock, host, path = '/') {
       '',
     ].join('\r\n');
     let data = '';
-    sock.on('data', (c) => { data += c.toString('utf8'); });
-    sock.on('end', () => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      try { sock.destroy(); } catch { /* */ }
       const idx = data.indexOf('\r\n\r\n');
       resolve(idx >= 0 ? data.slice(idx + 4).trim() : data.trim());
+    };
+    sock.setTimeout(SOCKET_TIMEOUT_MS);
+    sock.on('data', (c) => {
+      data += c.toString('utf8');
+      // 响应已含完整 IP 就不必等对端关闭连接
+      const idx = data.indexOf('\r\n\r\n');
+      if (idx >= 0 && /\d+\.\d+\.\d+\.\d+/.test(data.slice(idx + 4))) finish();
     });
-    sock.on('error', reject);
+    sock.on('end', finish);
+    sock.on('close', finish);
+    sock.on('timeout', () => {
+      if (settled) return;
+      settled = true;
+      try { sock.destroy(); } catch { /* */ }
+      reject(new Error('读取出口 IP 响应超时'));
+    });
+    sock.on('error', (e) => { if (!settled) { settled = true; reject(e); } });
     sock.write(req);
   });
 }
 
-/**
- * @param {{ proxy_type?: string, proxy_host?: string, proxy_port?: number, proxy_user?: string, proxy_pass?: string }} profile
- */
-async function probeExitIp(profile) {
+async function probeExitIpInner(profile) {
   const type = String(profile.proxy_type || 'noproxy').toLowerCase();
   if (type === 'noproxy' || !profile.proxy_host) {
     return probeDirect();
@@ -101,12 +129,12 @@ async function probeExitIp(profile) {
         80
       );
       const body = await httpGetOverSocket(sock, 'api.ipify.org', '/');
-      sock.destroy();
       const ip = String(body || '').match(/\d+\.\d+\.\d+\.\d+/)?.[0] || '';
       return { ip, via: 'socks5' };
     }
     // http(s) proxy: CONNECT then GET
     const sock = net.connect(Number(profile.proxy_port), profile.proxy_host);
+    sock.setTimeout(SOCKET_TIMEOUT_MS);
     const auth = (profile.proxy_user || profile.proxy_pass)
       ? Buffer.from(`${profile.proxy_user || ''}:${profile.proxy_pass || ''}`, 'utf8').toString('base64')
       : '';
@@ -120,6 +148,7 @@ async function probeExitIp(profile) {
     await new Promise((resolve, reject) => {
       let buf = '';
       sock.on('error', reject);
+      sock.on('timeout', () => { try { sock.destroy(); } catch { /* */ } reject(new Error('http 代理 CONNECT 超时')); });
       sock.on('data', (c) => {
         buf += c.toString('binary');
         if (buf.includes('\r\n\r\n')) {
@@ -128,13 +157,13 @@ async function probeExitIp(profile) {
             return;
           }
           sock.removeAllListeners('data');
+          sock.removeAllListeners('timeout');
           resolve();
         }
       });
       sock.write(head);
     });
     const body = await httpGetOverSocket(sock, 'api.ipify.org', '/');
-    sock.destroy();
     const ip = String(body || '').match(/\d+\.\d+\.\d+\.\d+/)?.[0] || '';
     return { ip, via: 'http' };
   } catch (e) {
@@ -142,16 +171,34 @@ async function probeExitIp(profile) {
   }
 }
 
+/**
+ * @param {{ proxy_type?: string, proxy_host?: string, proxy_port?: number, proxy_user?: string, proxy_pass?: string }} profile
+ * 无论内部发生什么，PROBE_HARD_TIMEOUT_MS 内必定返回（失败时 ip 为空）。
+ */
+function probeExitIp(profile) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(
+      () => resolve({ ip: '', via: 'error', error: `出口 IP 探测超时（${PROBE_HARD_TIMEOUT_MS / 1000}s）` }),
+      PROBE_HARD_TIMEOUT_MS,
+    );
+    probeExitIpInner(profile)
+      .then((r) => { clearTimeout(timer); resolve(r); })
+      .catch((e) => { clearTimeout(timer); resolve({ ip: '', via: 'error', error: e?.message || String(e) }); });
+  });
+}
+
 function probeDirect() {
   return new Promise((resolve) => {
-    http.get('http://api.ipify.org/', (res) => {
+    const req = http.get('http://api.ipify.org/', { timeout: SOCKET_TIMEOUT_MS }, (res) => {
       let body = '';
       res.on('data', (c) => { body += c; });
       res.on('end', () => {
         const ip = String(body || '').match(/\d+\.\d+\.\d+\.\d+/)?.[0] || '';
         resolve({ ip, via: 'direct' });
       });
-    }).on('error', (e) => resolve({ ip: '', via: 'error', error: e.message }));
+    });
+    req.on('timeout', () => { req.destroy(); resolve({ ip: '', via: 'error', error: '直连探测超时' }); });
+    req.on('error', (e) => resolve({ ip: '', via: 'error', error: e.message }));
   });
 }
 

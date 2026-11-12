@@ -214,7 +214,8 @@ async function createEnvChrome(opts) {
   function wireView(id, view, tab) {
     const wc = view.webContents;
     if (typeof onContentWebContents === 'function') {
-      try { onContentWebContents(wc); } catch { /* */ }
+      // 回调可返回 Promise（地区/指纹覆盖），首次导航要等它完成，否则首屏仍是本机时区
+      try { tab.emuReady = Promise.resolve(onContentWebContents(wc)).catch(() => {}); } catch { /* */ }
     }
     // 焦点在内容页时也能 F12 打开调试台
     wc.on('before-input-event', (event, input) => {
@@ -277,7 +278,7 @@ async function createEnvChrome(opts) {
     views.set(id, view);
     wireView(id, view, tab);
     if (activate) switchTab(id);
-    void beforeBrowseNav().then(() => {
+    void Promise.all([beforeBrowseNav(), tab.emuReady]).then(() => {
       view.webContents.loadURL(tab.url).catch((err) => {
         log(`loadURL 失败: ${err?.message || err}`);
       });

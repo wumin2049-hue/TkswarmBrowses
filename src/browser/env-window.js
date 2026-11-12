@@ -19,6 +19,7 @@ const { createEnvChrome } = require('./env-chrome');
 const { resolveChromeProxy, PROXY_BRIDGE_REV, MAX_ACTIVE_TUNNELS, HANDSHAKE_LIMIT, describeUpstreamRoute } = require('./proxy-auth');
 const { probeProxySummary, probeBurst } = require('./proxy-probe');
 const { showDiagnosticOnWebContents, inspectBlankContentOnWc } = require('./env-window-ui');
+const { buildEmulationOpts, applyEmulationToWc } = require('./env-emulation');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -350,6 +351,18 @@ app.whenReady().then(async () => {
     ? `上游 ${cfg.proxyMeta.proxy_type}://${cfg.proxyMeta.proxy_host}:${cfg.proxyMeta.proxy_port}${bridgeHint}`
     : (proxyRules || cfg.proxyServer || '直连（未绑定代理）');
 
+  // 时区 / 语言 / 经纬度 / 指纹脚本：每个标签页首次导航前应用（此前 Electron 路径完全没做）
+  const emulationOpts = buildEmulationOpts({
+    profileId,
+    fp: cfg.fp || {},
+    userAgent: cfg.userAgent,
+    locale: cfg.locale || cfg.acceptLanguages,
+    timezone: cfg.timezone,
+    latitude: cfg.latitude,
+    longitude: cfg.longitude,
+  });
+  logLine(`地区配置: 时区=${emulationOpts.timezone || '(空，使用本机)'} 语言=${emulationOpts.locale} 定位=${emulationOpts.latitude},${emulationOpts.longitude}`);
+
   const chrome = await createEnvChrome({
     profileId,
     userDataDir: String(cfg.userDataDir || ''),
@@ -360,7 +373,10 @@ app.whenReady().then(async () => {
     shellSession: shellSes,
     contentSession: contentSes,
     ensureContentProxy,
-    onContentWebContents: (wc) => bindContentWatchers(wc, proxyDisplay),
+    onContentWebContents: (wc) => {
+      bindContentWatchers(wc, proxyDisplay);
+      return applyEmulationToWc(wc, emulationOpts, logLine);
+    },
     headless: Boolean(cfg.headless),
     log: logLine,
   });

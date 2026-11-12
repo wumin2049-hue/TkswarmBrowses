@@ -6,7 +6,7 @@ const { getCurrentUser } = require('../db');
 const { resolveEngine } = require('../browser/engine');
 const { DATA_ROOT } = require('../config');
 const { probeExitIp } = require('../browser/exit-ip');
-const { lookupGeoByIp, applyIpCreateFields, alignRegionToProxy } = require('../browser/geo-from-ip');
+const { lookupGeoByIp, applyIpCreateFields, alignRegionToProxy, languageForCountry } = require('../browser/geo-from-ip');
 const { clearProfileCache, removeProfileDir } = require('../browser/profile-cleanup');
 const { exportProfilePack, importProfilePack } = require('../browser/profile-backup');
 const fs = require('node:fs');
@@ -129,6 +129,25 @@ function toBitProfile(row, runtime = null) {
   };
 }
 
+const COUNTRY_NAME_TO_CODE = {
+  'united states': 'US', usa: 'US', america: 'US', '美国': 'US', 'united kingdom': 'GB', uk: 'GB', '英国': 'GB',
+  philippines: 'PH', '菲律宾': 'PH', japan: 'JP', '日本': 'JP', 'south korea': 'KR', korea: 'KR', '韩国': 'KR',
+  singapore: 'SG', '新加坡': 'SG', malaysia: 'MY', '马来西亚': 'MY', thailand: 'TH', '泰国': 'TH',
+  vietnam: 'VN', '越南': 'VN', indonesia: 'ID', '印度尼西亚': 'ID', '印尼': 'ID', india: 'IN', '印度': 'IN',
+  germany: 'DE', '德国': 'DE', france: 'FR', '法国': 'FR', spain: 'ES', '西班牙': 'ES', italy: 'IT', '意大利': 'IT',
+  brazil: 'BR', '巴西': 'BR', mexico: 'MX', '墨西哥': 'MX', canada: 'CA', '加拿大': 'CA', australia: 'AU', '澳大利亚': 'AU',
+  russia: 'RU', '俄罗斯': 'RU', turkey: 'TR', '土耳其': 'TR', taiwan: 'TW', '台湾': 'TW', 'hong kong': 'HK', '香港': 'HK',
+  china: 'CN', '中国': 'CN',
+};
+
+/** 把国家码或国家名规整成两位大写国家码；认不出返回空 */
+function countryCodeFromHint(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  if (/^[A-Za-z]{2}$/.test(s)) return s.toUpperCase();
+  return COUNTRY_NAME_TO_CODE[s.toLowerCase()] || '';
+}
+
 async function resolveGeoFromProxy(proxyFields, fp, body = {}) {
   let lastIp = '';
   let geo = {};
@@ -136,6 +155,18 @@ async function resolveGeoFromProxy(proxyFields, fp, body = {}) {
     const probed = await probeExitIp(proxyFields).catch(() => ({ ip: '' }));
     lastIp = probed?.ip || '';
     if (lastIp) geo = await lookupGeoByIp(lastIp).catch(() => ({}));
+    // 降级 1：本机探测不到出口 IP（代理对探测站点不通/被重置）时，
+    // 用代理服务器自身 IP 查地区。住宅/机房代理的入口与出口通常同国。
+    if (!geo.countryCode && /^\d+\.\d+\.\d+\.\d+$/.test(String(proxyFields.proxy_host || ''))) {
+      const viaHost = await lookupGeoByIp(proxyFields.proxy_host).catch(() => ({}));
+      if (viaHost.countryCode) geo = viaHost;
+    }
+  }
+  // 降级 2：Node 中心库里该代理登记的国家（国家码或常见国家名）。
+  // 探测与查询全部失败时，至少保证时区/语言不是本机的。
+  if (!geo.countryCode) {
+    const hint = countryCodeFromHint(body.countryCode || body.country_code || body.proxyCountry || body.country);
+    if (hint) geo = { countryCode: hint, country: String(body.country || ''), timezone: '', language: languageForCountry(hint), latitude: 0, longitude: 0 };
   }
   const fields = applyIpCreateFields(fp, geo, body);
 
@@ -334,7 +365,10 @@ function createRouter() {
         const gate = assertProfileOwner(req.currentUser, row);
         if (!gate.ok) return res.json(fail(gate.msg));
         const fp = JSON.parse(row.fingerprint_json || '{}');
-        const resolved = await resolveGeoFromProxy(proxyFields, fp, {});
+        const resolved = await resolveGeoFromProxy(proxyFields, fp, {
+          country: req.body?.country,
+          countryCode: req.body?.countryCode || req.body?.country_code,
+        });
         // 代理没变就不要关窗：每次登录前都会同步一次代理，无变化时关窗会让已打开的环境消失
         const proxyChanged = String(row.proxy_type || 'noproxy') !== proxyType
           || String(row.proxy_host || '') !== host

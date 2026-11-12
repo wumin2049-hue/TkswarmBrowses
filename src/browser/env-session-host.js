@@ -2,7 +2,11 @@
  * 在主 Electron 进程内打开环境窗口（不 spawn 子进程）。
  * 便携版 portable exe 二次 spawn 自身在 Windows 上常导致白屏；同进程多窗口 + 共享 CDP 端口更稳。
  */
-const { mergeFingerprint, parseResolution, buildUserAgent } = require('./fingerprint');
+const {
+  mergeFingerprint, parseResolution, buildUserAgent, assignHardwareFingerprint, explicitFingerprintKeys,
+} = require('./fingerprint');
+const { timezoneForCountry, languageForCountry } = require('./geo-from-ip');
+const { buildEmulationOpts, applyEmulationToWc } = require('./env-emulation');
 const { resolveChromeProxy } = require('./proxy-auth');
 const { profileDir, fetchJson } = require('./launcher');
 const { createEnvChrome } = require('./env-chrome');
@@ -78,13 +82,25 @@ async function launchProfileInProcess(profile, options = {}) {
   }
   if (existing) await closeInProcessWindow(id);
 
-  const fp = mergeFingerprint(JSON.parse(profile.fingerprint_json || '{}'));
+  const rawFp = JSON.parse(profile.fingerprint_json || '{}');
+  const fp = mergeFingerprint(rawFp);
+  assignHardwareFingerprint(fp, id, explicitFingerprintKeys(rawFp));
   const { width, height } = parseResolution(fp.resolution);
   const userAgent = buildUserAgent(fp);
   const headless = Boolean(options.headless);
-  const locale = profile.language || fp.languages || 'en-US';
-  // 不写死时区：留空表示跟随系统
-  const timezone = profile.timezone || '';
+  const locale = profile.language || fp.languages || languageForCountry(profile.country) || 'en-US';
+  // 时区以代理地区为准；缺失按国家码兜底，仍为空才跟随系统
+  const timezone = profile.timezone || timezoneForCountry(profile.country, profile.longitude) || '';
+  const emulationOpts = buildEmulationOpts({
+    profileId: id,
+    fp,
+    userAgent,
+    locale,
+    timezone,
+    latitude: Number(profile.latitude || fp.latitude || 0),
+    longitude: Number(profile.longitude || fp.longitude || 0),
+  });
+  appendEnvLog(id, `地区配置: 时区=${timezone || '(空，使用本机)'} 语言=${locale} 定位=${emulationOpts.latitude},${emulationOpts.longitude}`);
   const startUrl = String(profile.platform || 'https://www.tiktok.com');
   const userDataDir = profileDir(id);
   const proxy = await resolveChromeProxy(profile);
@@ -198,7 +214,10 @@ async function launchProfileInProcess(profile, options = {}) {
     shellSession: shellSes,
     contentSession: contentSes,
     ensureContentProxy,
-    onContentWebContents: (wc) => bindContentEvents(wc),
+    onContentWebContents: (wc) => {
+      bindContentEvents(wc);
+      return applyEmulationToWc(wc, emulationOpts, (msg) => appendEnvLog(id, msg));
+    },
     headless,
     log: (msg) => appendEnvLog(id, msg),
   });

@@ -5,7 +5,10 @@
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
-const { mergeFingerprint, parseResolution, buildUserAgent } = require('./fingerprint');
+const {
+  mergeFingerprint, parseResolution, buildUserAgent, assignHardwareFingerprint, explicitFingerprintKeys,
+} = require('./fingerprint');
+const { timezoneForCountry, languageForCountry } = require('./geo-from-ip');
 const { reclaimBeforeOpen, writePid, clearPid } = require('./process-guard');
 const { DATA_ROOT } = require('../config');
 const { wantSoftwareRender, isRemoteSession } = require('./render-flags');
@@ -104,13 +107,16 @@ async function launchProfileElectron(profile, options = {}) {
 
   const { packaged } = resolveSelfExecutable();
   const { electronBin, kind: spawnKind } = resolveEnvSpawnExecutable(packaged);
-  const fp = mergeFingerprint(JSON.parse(profile.fingerprint_json || '{}'));
+  const rawFp = JSON.parse(profile.fingerprint_json || '{}');
+  const fp = mergeFingerprint(rawFp);
+  // 每个环境按 ID 分配不同的 GPU / 核数 / 分辨率组合
+  assignHardwareFingerprint(fp, profile.id, explicitFingerprintKeys(rawFp));
   const { width, height } = parseResolution(fp.resolution);
   const userAgent = buildUserAgent(fp);
   const headless = Boolean(options.headless);
-  // 不写死时区：留空表示跟随系统
-  const timezone = profile.timezone || '';
-  const locale = profile.language || fp.languages || 'en-US';
+  // 时区 / 语言以代理所在地区为准；profile 缺失时按国家码兜底，仍为空才跟随系统
+  const timezone = profile.timezone || timezoneForCountry(profile.country, profile.longitude) || '';
+  const locale = profile.language || fp.languages || languageForCountry(profile.country) || 'en-US';
   const port = await getFreePort();
   const userDataDir = profileDir(profile.id);
   const logFile = envLogFile(profile.id);
@@ -154,7 +160,8 @@ async function launchProfileElectron(profile, options = {}) {
     title: `${displayName} - 第一页自研浏览器`,
     proxyServer: '',
     proxyMeta,
-    timezone: profile.timezone || '',
+    timezone,
+    fp,
     locale,
     latitude: Number(profile.latitude || fp.latitude || 0),
     longitude: Number(profile.longitude || fp.longitude || 0),
