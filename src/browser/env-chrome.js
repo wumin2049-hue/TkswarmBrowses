@@ -278,7 +278,9 @@ async function createEnvChrome(opts) {
     views.set(id, view);
     wireView(id, view, tab);
     if (activate) switchTab(id);
-    void Promise.all([beforeBrowseNav(), tab.emuReady]).then(() => {
+    // 地区覆盖最多等 8 秒：即使它出问题，也绝不能拖住首次导航（否则整页超时）
+    const emuGate = Promise.race([tab.emuReady, new Promise((r) => setTimeout(r, 8000))]);
+    void Promise.all([beforeBrowseNav(), emuGate]).then(() => {
       view.webContents.loadURL(tab.url).catch((err) => {
         log(`loadURL 失败: ${err?.message || err}`);
       });

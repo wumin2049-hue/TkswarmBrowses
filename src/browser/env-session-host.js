@@ -193,7 +193,8 @@ async function launchProfileInProcess(profile, options = {}) {
     let inspected = false;
     wc.on('did-finish-load', () => {
       const href = wc.getURL();
-      if (href.startsWith('file:') || href.startsWith('data:')) return;
+      // about:blank 是地区覆盖前的预加载页，不算真正加载成功
+      if (href.startsWith('file:') || href.startsWith('data:') || href === 'about:blank') return;
       pageLoadedOk = true;
       clearTimeout(hardTimeout);
       if (inspected || settled) return;

@@ -44,6 +44,15 @@ function buildEmulationOpts(src = {}) {
   };
 }
 
+/** 任何 CDP 命令都不能无限挂起：超时即放弃该项，不阻塞页面加载 */
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label || '操作'} 超时(${ms}ms)`)), ms);
+  });
+  return Promise.race([Promise.resolve(promise), timeout]).finally(() => clearTimeout(timer));
+}
+
 function acceptLanguageOf(locale) {
   const primary = String(locale || 'en-US').split(',')[0].trim() || 'en-US';
   const base = primary.split('-')[0] || 'en';
@@ -64,6 +73,14 @@ async function applyEmulationToWc(wc, opts = {}, log = () => {}) {
 
   try { wc.setWebRTCIPHandlingPolicy('disable_non_proxied_udp'); } catch { /* 老版本无此 API */ }
 
+  // 还没有任何导航时渲染进程不存在，debugger 命令会一直挂起（直到页面导航才返回），
+  // 所以先落到 about:blank 把渲染进程建出来，再下发覆盖。
+  try {
+    if (!wc.getURL()) await withTimeout(wc.loadURL('about:blank'), 3000, 'about:blank');
+  } catch (error) {
+    log(`预加载 about:blank 失败（继续尝试下发覆盖）: ${error?.message || error}`);
+  }
+
   const dbg = wc.debugger;
   try {
     if (!dbg.isAttached()) dbg.attach('1.3');
@@ -71,10 +88,19 @@ async function applyEmulationToWc(wc, opts = {}, log = () => {}) {
     log(`标签页 debugger 附加失败，地区/指纹覆盖未应用: ${error?.message || error}`);
     return false;
   }
-  const send = (method, params = {}) => dbg.sendCommand(method, params).then(
-    () => true,
-    (error) => { log(`${method} 失败: ${error?.message || error}`); return false; },
-  );
+  // 一旦某条命令超时，说明渲染进程不可用，后面的命令不再逐条等待，避免叠加拖慢首屏
+  let dead = false;
+  const send = (method, params = {}) => {
+    if (dead) return Promise.resolve(false);
+    return withTimeout(dbg.sendCommand(method, params), 2500, method).then(
+      () => true,
+      (error) => {
+        log(`${method} 失败: ${error?.message || error}`);
+        if (/超时/.test(String(error?.message || ''))) dead = true;
+        return false;
+      },
+    );
+  };
 
   const applied = [];
   if (opts.userAgent) {

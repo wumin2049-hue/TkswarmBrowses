@@ -264,7 +264,8 @@ function bindContentWatchers(webContents, proxyDisplay) {
   let inspected = false;
   webContents.on('did-finish-load', () => {
     const href = webContents.getURL();
-    if (href.startsWith('data:') || href.startsWith('file:')) return;
+    // about:blank 是地区覆盖前的预加载页，不算真正加载成功
+    if (href.startsWith('data:') || href.startsWith('file:') || href === 'about:blank') return;
     pageLoadedOk = true;
     clearTimeout(hardTimeout);
     if (inspected || settled) return;
