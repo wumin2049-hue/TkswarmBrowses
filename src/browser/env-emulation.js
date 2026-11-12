@@ -38,8 +38,31 @@ function tzPatch(TZ) {
       return Reflect.construct(OrigDTF, [locales, withTz(options)], new.target || Patched);
     };
     Patched.prototype = OrigDTF.prototype;
-    Patched.supportedLocalesOf = OrigDTF.supportedLocalesOf.bind(OrigDTF);
+    // 原生 supportedLocalesOf 不依赖 this，直接复用，避免出现 "bound ..." 名称
+    Object.defineProperty(Patched, 'supportedLocalesOf', { value: OrigDTF.supportedLocalesOf, writable: true, configurable: true });
+    Object.defineProperty(Patched, 'length', { value: OrigDTF.length, configurable: true });
+    // prototype.constructor 必须指回对外可见的构造器，否则 new Intl.DateTimeFormat().constructor !== Intl.DateTimeFormat
+    Object.defineProperty(OrigDTF.prototype, 'constructor', { value: Patched, writable: true, configurable: true });
     Intl.DateTimeFormat = Patched;
+
+    // 伪装：在已有（可能已被 fp-inject 伪装过的）Function.prototype.toString 之上再叠一层，
+    // 让本脚本覆盖的函数对外表现为原生（toString / name / length）。
+    const prevToString = Function.prototype.toString;
+    const masked = new WeakMap();
+    const mask = (fn, orig) => {
+      try {
+        masked.set(fn, prevToString.call(orig));
+        Object.defineProperty(fn, 'name', { value: orig.name, configurable: true });
+        Object.defineProperty(fn, 'length', { value: orig.length, configurable: true });
+      } catch (e) { /* */ }
+    };
+    const toStr = function toString() {
+      const m = masked.get(this);
+      return m !== undefined ? m : prevToString.call(this);
+    };
+    mask(toStr, prevToString);
+    Object.defineProperty(Function.prototype, 'toString', { value: toStr, writable: true, configurable: true });
+    mask(Patched, OrigDTF);
 
     const partsFmt = new OrigDTF('en-US', {
       timeZone: TZ, hourCycle: 'h23', weekday: 'short', year: 'numeric', month: 'short',
@@ -69,7 +92,13 @@ function tzPatch(TZ) {
       return `GMT${m < 0 ? '-' : '+'}${pad(Math.floor(a / 60))}${pad(a % 60)} (${tzName})`;
     };
     const DP = Date.prototype;
-    const def = (name, fn) => { try { Object.defineProperty(DP, name, { value: fn, writable: true, configurable: true }); } catch (e) { /* */ } };
+    const def = (name, fn) => {
+      try {
+        const orig = DP[name];
+        Object.defineProperty(DP, name, { value: fn, writable: true, configurable: true });
+        if (typeof orig === 'function') mask(fn, orig);
+      } catch (e) { /* */ }
+    };
     def('getTimezoneOffset', function getTimezoneOffset() {
       const t = this.getTime();
       return Number.isNaN(t) ? NaN : -offsetMin(t);

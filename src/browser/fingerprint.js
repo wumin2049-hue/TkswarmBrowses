@@ -9,6 +9,9 @@ const CORE_VERSIONS = ['120', '124', '128', '131', '136', '140', '144', '148', '
 let REAL_CORE_VERSION = '';
 // 单独记「是否已尝试过」，否则探测失败返回 '' 时每次调用都会重新扫盘
 let REAL_CORE_PROBED = false;
+// 真实内核是否为 Electron 内嵌 Chromium，及其完整版本号
+let REAL_CORE_IS_EMBEDDED = false;
+let REAL_CORE_FULL_VERSION = '';
 
 /**
  * 用本机 Chrome 的真实主版本同步指纹版本。
@@ -20,6 +23,18 @@ let REAL_CORE_PROBED = false;
 function syncRealCoreVersion() {
   if (REAL_CORE_PROBED) return REAL_CORE_VERSION;
   REAL_CORE_PROBED = true;
+  // Electron 会话：窗口真正运行的内核是 Electron 内嵌的 Chromium（如 Electron 33 = 130），
+  // 与本机装的 Chrome 版本无关。UA 必须以它为准，否则就是「UA 说 157、内核是 130」。
+  try {
+    const full = String(process.versions?.electron ? (process.versions.chrome || '') : '').trim();
+    const major = (full.match(/^(\d{2,3})\./) || [])[1];
+    if (major) {
+      REAL_CORE_VERSION = major;
+      REAL_CORE_FULL_VERSION = full;
+      REAL_CORE_IS_EMBEDDED = true;
+      return REAL_CORE_VERSION;
+    }
+  } catch { /* 落到下面的本机 Chrome 探测 */ }
   try {
     const { detectChromeMajorVersion } = require('./chrome-path');
     REAL_CORE_VERSION = String(detectChromeMajorVersion() || '').trim();
@@ -29,11 +44,22 @@ function syncRealCoreVersion() {
   return REAL_CORE_VERSION;
 }
 
+/** 真实内核完整版本号（如 130.0.6723.191）；仅 Electron 内嵌内核可知，其余返回 '' */
+function realCoreFullVersion(major) {
+  syncRealCoreVersion();
+  if (REAL_CORE_IS_EMBEDDED && REAL_CORE_FULL_VERSION && String(major) === REAL_CORE_VERSION) {
+    return REAL_CORE_FULL_VERSION;
+  }
+  return `${major}.0.0.0`;
+}
+
 /** 与真实内核版本对齐后的 coreVersion */
 function alignedCoreVersion(rawWanted) {
   const real = syncRealCoreVersion();
   const wanted = String(rawWanted || '').match(/^(\d{2,3})/)?.[1] || '';
   if (!real) return wanted || DEFAULT_FP.coreVersion;
+  // Electron 内嵌内核是唯一真相：无论环境里存的是 148 / 157 / 131，一律以真实内核为准
+  if (REAL_CORE_IS_EMBEDDED) return real;
   if (!wanted) return real;
   // 相差过大（>=5 个大版本）时以内核真实版本为准
   if (Math.abs(Number(real) - Number(wanted)) >= 5) return real;
@@ -87,6 +113,8 @@ function detectPlatformVersion() {
 function normalizeCoreVersion(raw) {
   const v = String(raw || '').trim();
   const major = (v.match(/^(\d{2,3})/) || [])[1];
+  // 真实内核版本不在固定档位里（如 130）也必须原样保留，否则会被吸附成 131 而与内核不符
+  if (major && major === syncRealCoreVersion()) return major;
   if (major && CORE_VERSIONS.includes(major)) return major;
   // 允许接近档位：取最近的受支持版本
   if (major) {
@@ -217,7 +245,7 @@ function explicitFingerprintKeys(input = {}) {
  */
 function buildUserAgentMetadata(fp = {}) {
   const ver = normalizeCoreVersion(fp.coreVersion);
-  const fullVer = `${ver}.0.0.0`;
+  const fullVer = realCoreFullVersion(ver);
   const isMac = fp.os === 'MacIntel';
   return {
     brands: [
@@ -247,7 +275,7 @@ function buildUserAgentMetadata(fp = {}) {
  */
 function buildClientHintHeaders(fp = {}, locale = 'en-US') {
   const ver = normalizeCoreVersion(fp.coreVersion);
-  const fullVer = `${ver}.0.0.0`;
+  const fullVer = realCoreFullVersion(ver);
   const isMac = fp.os === 'MacIntel';
   const primaryLang = String(locale || fp.languages || 'en-US').split(',')[0].trim() || 'en-US';
   const baseLang = primaryLang.split('-')[0] || 'en';

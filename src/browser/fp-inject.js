@@ -33,7 +33,58 @@ function buildInjectScript(seedKey, fp = {}) {
 
   return `(() => {
   if (window.__TKSWARM_FP__) return;
-  window.__TKSWARM_FP__ = true;
+  // 标记必须不可枚举，否则 Object.keys(window) 一眼就能看到
+  try { Object.defineProperty(window, '__TKSWARM_FP__', { value: true }); } catch (e) { window.__TKSWARM_FP__ = true; }
+
+  // —— 伪装基础设施：让被覆盖的函数在 toString / name / length 上与原生一致 ——
+  const __nativeToString = Function.prototype.toString;
+  const __masked = new WeakMap();
+  const __seenGP = new WeakSet();
+  const __seenRP = new WeakSet();
+  const __seenRtc = new WeakSet();
+  const __seenFn = new WeakSet();
+  const __findDesc = (o, k) => {
+    for (let p = o; p; p = Object.getPrototypeOf(p)) {
+      const d = Object.getOwnPropertyDescriptor(p, k);
+      if (d) return d;
+    }
+    return null;
+  };
+  const __maskFn = (fn, orig) => {
+    try {
+      __masked.set(fn, __nativeToString.call(orig));
+      Object.defineProperty(fn, 'name', { value: orig.name, configurable: true });
+      Object.defineProperty(fn, 'length', { value: orig.length, configurable: true });
+    } catch (e) {}
+  };
+  // 在任何覆盖发生之前，先记下原始描述符；脚本末尾统一对照伪装
+  const __snap = [];
+  [
+    ['HTMLCanvasElement', 'toDataURL'], ['HTMLCanvasElement', 'toBlob'],
+    ['CanvasRenderingContext2D', 'getImageData'],
+    ['WebGLRenderingContext', 'getParameter'], ['WebGLRenderingContext', 'readPixels'],
+    ['WebGL2RenderingContext', 'getParameter'], ['WebGL2RenderingContext', 'readPixels'],
+    ['AudioBuffer', 'getChannelData'], ['AudioBuffer', 'copyFromChannel'],
+    ['Navigator', 'platform'], ['Navigator', 'languages'], ['Navigator', 'language'],
+    ['Navigator', 'webdriver'], ['Navigator', 'plugins'],
+    ['RTCPeerConnection', 'addEventListener'], ['RTCPeerConnection', 'setLocalDescription'],
+    ['RTCPeerConnection', 'createOffer'], ['RTCPeerConnection', 'onicecandidate'],
+  ].forEach(([cls, key]) => {
+    try {
+      const C = window[cls];
+      if (typeof C !== 'function' || !C.prototype) return;
+      const d = __findDesc(C.prototype, key);
+      if (d) __snap.push({ o: C.prototype, k: key, d: d });
+    } catch (e) {}
+  });
+  const __toStr = function toString() {
+    const m = __masked.get(this);
+    return m !== undefined ? m : __nativeToString.call(this);
+  };
+  __maskFn(__toStr, __nativeToString);
+  try {
+    Object.defineProperty(Function.prototype, 'toString', { value: __toStr, writable: true, configurable: true });
+  } catch (e) {}
   const SEED = ${seed};
   function rnd(n) {
     let x = (SEED ^ (n * 2654435761)) >>> 0;
@@ -116,7 +167,7 @@ function buildInjectScript(seedKey, fp = {}) {
   // —— WebGL ——
   try {
     const patchGetParameter = (proto) => {
-      if (!proto || proto.__tkPatched) return;
+      if (!proto || __seenGP.has(proto)) return;
       const getParameter = proto.getParameter;
       proto.getParameter = function(param) {
         const UNMASKED_VENDOR = 0x9245;
@@ -125,13 +176,13 @@ function buildInjectScript(seedKey, fp = {}) {
         if (param === UNMASKED_RENDERER) return ${JSON.stringify(renderer)};
         return getParameter.call(this, param);
       };
-      proto.__tkPatched = true;
+      __seenGP.add(proto);
     };
     if (typeof WebGLRenderingContext !== 'undefined') patchGetParameter(WebGLRenderingContext.prototype);
     if (typeof WebGL2RenderingContext !== 'undefined') patchGetParameter(WebGL2RenderingContext.prototype);
 
     const patchReadPixels = (proto) => {
-      if (!proto || proto.__tkReadPatched) return;
+      if (!proto || __seenRP.has(proto)) return;
       const readPixels = proto.readPixels;
       proto.readPixels = function(...args) {
         readPixels.apply(this, args);
@@ -144,7 +195,7 @@ function buildInjectScript(seedKey, fp = {}) {
           }
         } catch (e) {}
       };
-      proto.__tkReadPatched = true;
+      __seenRP.add(proto);
     };
     if (typeof WebGLRenderingContext !== 'undefined') patchReadPixels(WebGLRenderingContext.prototype);
     if (typeof WebGL2RenderingContext !== 'undefined') patchReadPixels(WebGL2RenderingContext.prototype);
@@ -336,7 +387,7 @@ function buildInjectScript(seedKey, fp = {}) {
     const noise = ${clientRectNoise};
     const patchRect = (proto, method) => {
       const orig = proto[method];
-      if (!orig || orig.__tkPatched) return;
+      if (!orig || __seenFn.has(orig)) return;
       proto[method] = function(...args) {
         const r = orig.apply(this, args);
         if (!r) return r;
@@ -348,7 +399,7 @@ function buildInjectScript(seedKey, fp = {}) {
           return r;
         } catch (e) { return r; }
       };
-      proto[method].__tkPatched = true;
+      __seenFn.add(proto[method]);
     };
     patchRect(Element.prototype, 'getBoundingClientRect');
     if (typeof Range !== 'undefined') patchRect(Range.prototype, 'getBoundingClientRect');
@@ -424,7 +475,7 @@ function buildInjectScript(seedKey, fp = {}) {
       };
 
       const patchEvents = (proto) => {
-        if (!proto || proto.__tkRtcPatched) return;
+        if (!proto || __seenRtc.has(proto)) return;
         const addEventListener = proto.addEventListener;
         if (typeof addEventListener === 'function') {
           proto.addEventListener = function(type, listener, ...rest) {
@@ -463,7 +514,7 @@ function buildInjectScript(seedKey, fp = {}) {
             });
           };
         }
-        proto.__tkRtcPatched = true;
+        __seenRtc.add(proto);
       };
       patchEvents(RTC.prototype);
 
@@ -487,17 +538,18 @@ function buildInjectScript(seedKey, fp = {}) {
         }
       } catch (e) {}
 
-      // getUserMedia：保持 API 形态，只拒绝授权，避免「函数不存在」这种硬特征
-      try {
-        if (navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === 'function') {
-          const origGum = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
-          navigator.mediaDevices.getUserMedia = function(constraints) {
-            // 有真实摄像头时交给原生；无设备时按标准行为拒绝
-            return origGum(constraints);
-          };
-        }
-      } catch (e) {}
     }
+  } catch (e) {}
+  // —— 统一伪装：被覆盖的函数 / getter 对外表现为原生 ——
+  try {
+    __snap.forEach(({ o, k, d }) => {
+      try {
+        const cur = Object.getOwnPropertyDescriptor(o, k);
+        if (!cur) return;
+        if (typeof cur.value === 'function' && typeof d.value === 'function' && cur.value !== d.value) __maskFn(cur.value, d.value);
+        if (typeof cur.get === 'function' && typeof d.get === 'function' && cur.get !== d.get) __maskFn(cur.get, d.get);
+      } catch (e) {}
+    });
   } catch (e) {}
 })();`;
 }

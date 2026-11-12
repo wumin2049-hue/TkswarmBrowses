@@ -110,6 +110,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build-mac:
+    # Windows 是主测试平台：等 build-win 完成后 mac 才开始，Windows 产物先出。
+    # 若 build-win 失败，mac 会被跳过（省 macOS 分钟数）；需要强制打 mac 可手动 Re-run。
+    needs: build-win
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
