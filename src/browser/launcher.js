@@ -116,7 +116,8 @@ async function launchProfile(profile, options = {}) {
   const { width, height } = parseResolution(fp.resolution);
   const userAgent = buildUserAgent(fp);
   const headless = Boolean(options.headless);
-  const timezone = profile.timezone || 'America/New_York';
+  // 不写死时区：留空表示跟随系统。伪造一个错误的时区比不覆盖更危险。
+  const timezone = profile.timezone || '';
   const locale = profile.language || fp.languages || 'en-US';
   const latitude = Number(profile.latitude || fp.latitude || 0);
   const longitude = Number(profile.longitude || fp.longitude || 0);
@@ -132,6 +133,12 @@ async function launchProfile(profile, options = {}) {
     '--no-default-browser-check',
     '--disable-background-networking',
     '--disable-sync',
+    // 关键：带 --remote-debugging-port 启动时 Chromium 会打开 AutomationControlled，
+    // 使 navigator.webdriver === true。这是风控一抓一个准的自动化特征，
+    // 必须在启动参数里关掉，而不是靠页面 JS 事后覆盖。
+    '--disable-blink-features=AutomationControlled',
+    // 去掉「Chrome 正受自动化软件控制」开关带来的其他差异
+    '--excludeSwitches=enable-automation',
     // WebRTC：禁止非代理 UDP，降低真实 IP 泄露
     '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
     '--enforce-webrtc-ip-permission-check',

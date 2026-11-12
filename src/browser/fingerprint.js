@@ -1,5 +1,41 @@
 /** 支持的 Chrome 内核档位（UA / Client Hints；实际二进制仍用本机 Chrome） */
-const CORE_VERSIONS = ['120', '124', '128', '131', '136', '148'];
+const CORE_VERSIONS = ['120', '124', '128', '131', '136', '140', '144', '148', '150', '152', '154', '156', '157', '158', '159', '160'];
+
+/**
+ * 打开环境时探测到的真实内核版本（如本机 Chrome 157.0.x）。
+ * 见 syncRealCoreVersion()：UA 必须与内核真实版本一致，否则页面做特性探测
+ * 就能发现「UA 说 131、身上有 157 的特性」，判定为伪造环境。
+ */
+let REAL_CORE_VERSION = '';
+
+/**
+ * 用本机 Chrome 的真实主版本同步指纹版本。
+ * - 指纹里显式指定了 coreVersion 时：只有当它与真实版本相差 >= 5 个大版本才强制纠正
+ *   （尊重用户刻意选择的档位，但避免 131 vs 157 这种离谱错配）
+ * - 未指定时：直接采用真实版本
+ * @returns {string} 真实主版本号，探测失败返回 ''
+ */
+function syncRealCoreVersion() {
+  if (REAL_CORE_VERSION !== '') return REAL_CORE_VERSION;
+  try {
+    const { detectChromeMajorVersion } = require('./chrome-path');
+    REAL_CORE_VERSION = String(detectChromeMajorVersion() || '').trim();
+  } catch {
+    REAL_CORE_VERSION = '';
+  }
+  return REAL_CORE_VERSION;
+}
+
+/** 与真实内核版本对齐后的 coreVersion */
+function alignedCoreVersion(rawWanted) {
+  const real = syncRealCoreVersion();
+  const wanted = String(rawWanted || '').match(/^(\d{2,3})/)?.[1] || '';
+  if (!real) return wanted || DEFAULT_FP.coreVersion;
+  if (!wanted) return real;
+  // 相差过大（>=5 个大版本）时以内核真实版本为准
+  if (Math.abs(Number(real) - Number(wanted)) >= 5) return real;
+  return wanted;
+}
 
 const DEFAULT_FP = {
   coreVersion: '131',
@@ -20,6 +56,31 @@ const DEFAULT_FP = {
   webglRenderer: 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 Direct3D11 vs_5_0 ps_5_0)',
 };
 
+/**
+ * Windows 11 的 sec-ch-ua-platform-version 是 "13.0.0"+（Win10 是 "10.0.0"，Win11 各版为 13/14/15/16）。
+ * 报错会与 navigator.userAgentData 的实际值矛盾，这里按真实系统版本取。
+ */
+function detectPlatformVersion() {
+  if (process.platform === 'darwin') return '14.5.0';
+  if (process.platform !== 'win32') return '6.5.0';
+  try {
+    const os = require('node:os');
+    const rel = String(os.release() || ''); // 如 "10.0.22631"
+    const parts = rel.split('.').map(Number);
+    const build = parts[2] || 0;
+    if ((parts[0] || 0) === 10 && build >= 22000) {
+      // Windows 11 映射：22000 → 13.0.0，22631/26100 → 15.0.0 左右
+      if (build >= 26100) return '16.0.0';
+      if (build >= 22631) return '15.0.0';
+      if (build >= 22621) return '14.0.0';
+      return '13.0.0';
+    }
+    return '10.0.0';
+  } catch {
+    return '10.0.0';
+  }
+}
+
 function normalizeCoreVersion(raw) {
   const v = String(raw || '').trim();
   const major = (v.match(/^(\d{2,3})/) || [])[1];
@@ -35,7 +96,8 @@ function normalizeCoreVersion(raw) {
     }
     return best;
   }
-  return DEFAULT_FP.coreVersion;
+  const real = syncRealCoreVersion();
+  return real || DEFAULT_FP.coreVersion;
 }
 
 function mergeFingerprint(input = {}) {
@@ -43,7 +105,8 @@ function mergeFingerprint(input = {}) {
   if (input?.browserFingerPrint) {
     Object.assign(fp, input.browserFingerPrint);
   }
-  fp.coreVersion = normalizeCoreVersion(fp.coreVersion);
+  // 关键：UA 声称的版本必须与内核真实版本一致，否则一眼假
+  fp.coreVersion = alignedCoreVersion(normalizeCoreVersion(fp.coreVersion));
   return fp;
 }
 
@@ -86,7 +149,8 @@ function buildUserAgentMetadata(fp = {}) {
     ],
     fullVersion: fullVer,
     platform: isMac ? 'macOS' : 'Windows',
-    platformVersion: isMac ? '14.5.0' : '10.0.0',
+    // 必须与真实系统一致：Win10 是 10.0.0，Win11 是 13~16.x
+    platformVersion: isMac ? '14.5.0' : detectPlatformVersion(),
     architecture: 'x86',
     model: '',
     mobile: false,
@@ -111,7 +175,7 @@ function buildClientHintHeaders(fp = {}, locale = 'en-US') {
     'sec-ch-ua': `"Not-A.Brand";v="99", "Google Chrome";v="${ver}", "Chromium";v="${ver}"`,
     'sec-ch-ua-mobile': '?0',
     'sec-ch-ua-platform': isMac ? '"macOS"' : '"Windows"',
-    'sec-ch-ua-platform-version': isMac ? '"14.5.0"' : '"10.0.0"',
+    'sec-ch-ua-platform-version': isMac ? '"14.5.0"' : `"${detectPlatformVersion()}"`,
     'sec-ch-ua-arch': '"x86"',
     'sec-ch-ua-bitness': '"64"',
     'sec-ch-ua-model': '""',
@@ -129,6 +193,9 @@ module.exports = {
   buildUserAgentMetadata,
   buildClientHintHeaders,
   normalizeCoreVersion,
+  syncRealCoreVersion,
+  alignedCoreVersion,
+  detectPlatformVersion,
   CORE_VERSIONS,
   DEFAULT_FP,
 };

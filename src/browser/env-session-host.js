@@ -83,7 +83,8 @@ async function launchProfileInProcess(profile, options = {}) {
   const userAgent = buildUserAgent(fp);
   const headless = Boolean(options.headless);
   const locale = profile.language || fp.languages || 'en-US';
-  const timezone = profile.timezone || 'America/New_York';
+  // 不写死时区：留空表示跟随系统
+  const timezone = profile.timezone || '';
   const startUrl = String(profile.platform || 'https://www.tiktok.com');
   const userDataDir = profileDir(id);
   const proxy = await resolveChromeProxy(profile);

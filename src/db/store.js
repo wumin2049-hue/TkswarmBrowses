@@ -102,7 +102,9 @@ function createProfile(row) {
       fingerprint_json: typeof row.fingerprint_json === 'string'
         ? row.fingerprint_json
         : JSON.stringify(row.fingerprint_json || {}),
-      timezone: row.timezone || 'America/New_York',
+      // 时区留空表示「跟随出口 IP / 系统」，不要写死成美国东部：
+      // IP 在亚洲却报纽约，是比没有时区更明显的矛盾信号
+      timezone: row.timezone || '',
       language: row.language || 'en-US',
       latitude: Number(row.latitude || 0),
       longitude: Number(row.longitude || 0),

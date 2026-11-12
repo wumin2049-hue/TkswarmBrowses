@@ -108,7 +108,8 @@ async function launchProfileElectron(profile, options = {}) {
   const { width, height } = parseResolution(fp.resolution);
   const userAgent = buildUserAgent(fp);
   const headless = Boolean(options.headless);
-  const timezone = profile.timezone || 'America/New_York';
+  // 不写死时区：留空表示跟随系统
+  const timezone = profile.timezone || '';
   const locale = profile.language || fp.languages || 'en-US';
   const port = await getFreePort();
   const userDataDir = profileDir(profile.id);
@@ -153,7 +154,7 @@ async function launchProfileElectron(profile, options = {}) {
     title: `${displayName} - 第一页自研浏览器`,
     proxyServer: '',
     proxyMeta,
-    timezone: profile.timezone || 'America/New_York',
+    timezone: profile.timezone || '',
     locale,
     latitude: Number(profile.latitude || fp.latitude || 0),
     longitude: Number(profile.longitude || fp.longitude || 0),

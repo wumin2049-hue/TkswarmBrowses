@@ -44,6 +44,16 @@ function winDisableFeatures() {
 }
 
 /**
+ * 必须关闭的自动化 blink 特性。
+ *
+ * AutomationControlled 打开时，`navigator.webdriver === true`，
+ * 这是最著名、最容易被风控直接抓到的一条自动化特征。
+ * TikTok 注册页只要读一次 navigator.webdriver 就能拒绝要求 App 验证，
+ * 所以这里必须在 Chromium 启动前就关掉，而不是靠 JS 事后涂抹。
+ */
+const DISABLED_BLINK_FEATURES = ['AutomationControlled'];
+
+/**
  * 子进程 spawn 用：必须在 --tkswarm-env 之前传入，确保 Chromium 在 BrowserMain 前解析。
  * @param {{ softwareRender?: boolean }} opts
  * @returns {string[]}
@@ -58,6 +68,10 @@ function buildChildChromiumArgv(opts = {}) {
     '--disable-renderer-backgrounding',
     '--disable-backgrounding-occluded-windows',
     `--disable-features=${winDisableFeatures()}`,
+    // 去掉 navigator.webdriver=true 这类自动化标记
+    `--disable-blink-features=${DISABLED_BLINK_FEATURES.join(',')}`,
+    // 关闭「Chrome 正受自动化软件控制」提示条带来的附加差异
+    '--excludeSwitches=enable-automation',
   ];
   if (process.platform === 'win32') {
     argv.push('--disable-gpu-sandbox');

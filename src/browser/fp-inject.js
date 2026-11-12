@@ -154,6 +154,113 @@ function buildInjectScript(seedKey, fp = {}) {
     def(Navigator.prototype, 'language', ${JSON.stringify(languages[0] || 'en-US')});
   } catch (e) {}
 
+  // —— webdriver 兜底 ——
+  // 正常情况已由启动参数 --disable-blink-features=AutomationControlled 从根上关掉；
+  // 这里再兜一层，防止某些内核/参数组合漏网。
+  try {
+    if (navigator.webdriver !== false) {
+      Object.defineProperty(Navigator.prototype, 'webdriver', {
+        get: () => false,
+        configurable: true,
+      });
+    }
+  } catch (e) {}
+
+  // —— window.chrome 完整性 ——
+  // Electron 内核下 window.chrome 常是空对象或缺失子项，真实 Chrome 一定有这几个成员。
+  // 只补缺失项，不动已有实现，避免破坏正常功能。
+  try {
+    if (!window.chrome || typeof window.chrome !== 'object') window.chrome = {};
+    const c = window.chrome;
+    if (!c.runtime) {
+      c.runtime = {
+        connect: function () {
+          throw new Error('Could not establish connection. Receiving end does not exist.');
+        },
+        sendMessage: function () {
+          throw new Error('Could not establish connection. Receiving end does not exist.');
+        },
+        onMessage: {
+          addListener: function () {},
+          removeListener: function () {},
+          hasListener: function () { return false; },
+        },
+      };
+    }
+    if (!c.loadTimes) {
+      c.loadTimes = function () {
+        const t = performance.timing || {};
+        const s = (t.navigationStart || Date.now()) / 1000;
+        return {
+          requestTime: s, startLoadTime: s, commitLoadTime: s + 0.05,
+          finishDocumentLoadTime: s + 0.2, finishLoadTime: s + 0.3,
+          firstPaintTime: s + 0.15, firstPaintAfterLoadTime: 0,
+          navigationType: 'Other', wasFetchedViaSpdy: true, wasNpnNegotiated: true,
+          npnNegotiatedProtocol: 'h2', wasAlternateProtocolAvailable: false,
+          connectionInfo: 'h2',
+        };
+      };
+    }
+    if (!c.csi) {
+      c.csi = function () {
+        return { onloadT: Date.now(), pageT: 1000, startE: 1, tran: 15 };
+      };
+    }
+    if (!c.app) {
+      c.app = {
+        isInstalled: false,
+        InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
+        RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' },
+        getDetails: function () { return null; },
+        getIsInstalled: function () { return false; },
+        installState: function () { return 'not_installed'; },
+        runningState: function () { return 'cannot_run'; },
+      };
+    }
+  } catch (e) {}
+
+  // —— plugins / mimeTypes ——
+  // 空数组是自动化环境最典型的特征之一，真实 Chrome 至少有 PDF 相关项。
+  try {
+    if (!navigator.plugins || navigator.plugins.length === 0) {
+      const names = [
+        { name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+        { name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+        { name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+        { name: 'Microsoft Edge PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+        { name: 'WebKit built-in PDF', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+      ];
+      const arr = Object.create(PluginArray.prototype);
+      names.forEach((meta, i) => {
+        const plugin = Object.create(Plugin.prototype);
+        const pdfMime = {
+          type: 'application/pdf',
+          suffixes: 'pdf',
+          description: meta.description,
+          enabledPlugin: plugin,
+        };
+        Object.defineProperty(plugin, 'name', { get: () => meta.name, configurable: true });
+        Object.defineProperty(plugin, 'filename', { get: () => meta.filename, configurable: true });
+        Object.defineProperty(plugin, 'description', { get: () => meta.description, configurable: true });
+        Object.defineProperty(plugin, 'length', { get: () => 1, configurable: true });
+        Object.defineProperty(plugin, 0, { get: () => pdfMime, configurable: true });
+        Object.defineProperty(arr, i, { get: () => plugin, configurable: true });
+        Object.defineProperty(arr, meta.name, { get: () => plugin, configurable: true });
+      });
+      Object.defineProperty(arr, 'length', { get: () => names.length, configurable: true });
+      Object.defineProperty(arr, 'item', {
+        value: function (i) { return this[i] || null; }, configurable: true,
+      });
+      Object.defineProperty(arr, 'namedItem', {
+        value: function (n) { return this[n] || null; }, configurable: true,
+      });
+      arr[Symbol.iterator] = function* () {
+        for (let i = 0; i < names.length; i += 1) yield arr[i];
+      };
+      Object.defineProperty(Navigator.prototype, 'plugins', { get: () => arr, configurable: true });
+    }
+  } catch (e) {}
+
   // —— DPI ——
   try {
     Object.defineProperty(window, 'devicePixelRatio', {

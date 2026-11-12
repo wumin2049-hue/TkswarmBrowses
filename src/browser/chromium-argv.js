@@ -5,6 +5,16 @@
 const WIN_FEATURES = ['RendererCodeIntegrity', 'CalculateNativeWinOcclusion', 'Vulkan'];
 
 /**
+ * 必须关闭的 blink 自动化特性。
+ *
+ * AutomationControlled 启用时 `navigator.webdriver === true`，
+ * 这是风控最容易直接抓到的一条自动化特征：TikTok 注册页读一次就能拒绝，
+ * 要求「Continue on the TikTok app」扫码验证。
+ * 必须在 Chromium 启动前关掉，靠 JS 事后涂抹会被 getter 特征反查。
+ */
+const DISABLED_BLINK_FEATURES = ['AutomationControlled'];
+
+/**
  * @param {{ softwareRender?: boolean, disableSandbox?: boolean, profileId?: string }} options
  * @returns {string[]}
  */
@@ -25,6 +35,9 @@ function buildChildChromiumArgv(options = {}) {
     '--disable-backgrounding-occluded-windows',
     '--remote-allow-origins=*',
     `--disable-features=${WIN_FEATURES.join(',')}`,
+    // 去掉 navigator.webdriver=true 与「正受自动化软件控制」相关差异
+    `--disable-blink-features=${DISABLED_BLINK_FEATURES.join(',')}`,
+    '--excludeSwitches=enable-automation',
   ];
 
   if (disableSandbox) {
