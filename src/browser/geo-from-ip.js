@@ -186,3 +186,136 @@ function applyIpCreateFields(fp = {}, geo = {}, body = {}) {
 }
 
 module.exports = { lookupGeoByIp, applyIpCreateFields, COUNTRY_LOCALE, COUNTRY_TIMEZONE };
+
+/* ------------------------------------------------------------------ *
+ * 地区一致性强制对齐
+ *
+ * 指纹浏览器最基本的一条：代理 IP 的国家、浏览器时区、语言必须自洽。
+ * 三者只要有一项对不上（典型：美国 IP + Asia/Shanghai + zh-CN），
+ * 风控立刻能推断「这个"美国用户"其实在别处」，前面所有伪装都白做。
+ *
+ * 这里不做「探测」只做「收口」：给定 IP 国家码，把时区/语言强制写成该国的值，
+ * 并返回冲突说明，供创建环境时提示用户。
+ * ------------------------------------------------------------------ */
+
+/** 一个国家可能有多个时区（美/加/澳/俄/巴西），按经度挑最接近的 */
+const COUNTRY_MULTI_TIMEZONE = {
+  US: [
+    { tz: 'America/New_York', lon: -74 }, { tz: 'America/Chicago', lon: -87.6 },
+    { tz: 'America/Denver', lon: -105 }, { tz: 'America/Los_Angeles', lon: -118.2 },
+    { tz: 'America/Phoenix', lon: -112 },
+  ],
+  CA: [
+    { tz: 'America/Toronto', lon: -79.4 }, { tz: 'America/Vancouver', lon: -123.1 },
+    { tz: 'America/Edmonton', lon: -113.5 },
+  ],
+  AU: [
+    { tz: 'Australia/Sydney', lon: 151.2 }, { tz: 'Australia/Perth', lon: 115.9 },
+    { tz: 'Australia/Adelaide', lon: 138.6 }, { tz: 'Australia/Brisbane', lon: 153 },
+  ],
+  RU: [
+    { tz: 'Europe/Moscow', lon: 37.6 }, { tz: 'Asia/Novosibirsk', lon: 82.9 },
+    { tz: 'Asia/Vladivostok', lon: 131.9 },
+  ],
+  BR: [
+    { tz: 'America/Sao_Paulo', lon: -46.6 }, { tz: 'America/Manaus', lon: -60 },
+  ],
+};
+
+/**
+ * 按国家 + 经度给出最合理的时区。
+ * @param {string} countryCode 两位国家码
+ * @param {number|null} longitude 出口 IP 经度（可为空）
+ */
+function timezoneForCountry(countryCode, longitude) {
+  const cc = String(countryCode || '').toUpperCase();
+  if (!cc) return '';
+  const multi = COUNTRY_MULTI_TIMEZONE[cc];
+  if (multi && multi.length) {
+    const lon = Number(longitude);
+    if (Number.isFinite(lon)) {
+      let best = multi[0];
+      let dist = Infinity;
+      for (const item of multi) {
+        const d = Math.abs(item.lon - lon);
+        if (d < dist) { dist = d; best = item; }
+      }
+      return best.tz;
+    }
+    return multi[0].tz;
+  }
+  return COUNTRY_TIMEZONE[cc] || '';
+}
+
+/** 按国家给语言；未收录的国家回退到该国主要语言，再不行 en-US */
+function languageForCountry(countryCode) {
+  const cc = String(countryCode || '').toUpperCase();
+  if (!cc) return '';
+  if (COUNTRY_LOCALE[cc]) return COUNTRY_LOCALE[cc];
+  return '';
+}
+
+/**
+ * 把 fp 的时区/语言强制对齐到 IP 所在国家。
+ *
+ * @param {object} fp 环境指纹对象（会被就地修改）
+ * @param {{ countryCode?: string, timezone?: string, longitude?: number, latitude?: number }} geo
+ * @param {{ force?: boolean }} [opts] force=true 时即使已有值也覆盖
+ * @returns {{ changed: string[], conflicts: string[], timezone: string, language: string }}
+ */
+function alignRegionToProxy(fp = {}, geo = {}, opts = {}) {
+  const cc = String(geo.countryCode || '').toUpperCase();
+  const force = opts.force === true;
+  const changed = [];
+  const conflicts = [];
+  if (!cc) {
+    return { changed, conflicts: ['未能识别代理 IP 的国家，时区/语言未对齐'], timezone: fp.timezone || '', language: fp.language || '' };
+  }
+
+  const wantTz = timezoneForCountry(cc, geo.longitude);
+  const wantLang = languageForCountry(cc);
+
+  // ---- 时区 ----
+  if (wantTz) {
+    const cur = String(fp.timezone || '').trim();
+    if (!cur || force) {
+      if (cur !== wantTz) { fp.timezone = wantTz; changed.push(`时区 ${cur || '(空)'} → ${wantTz}`); }
+    } else if (cur !== wantTz) {
+      conflicts.push(`时区与代理地区不符：${cur}，代理国家 ${cc} 应为 ${wantTz}`);
+      if (force) fp.timezone = wantTz;
+    }
+  }
+
+  // ---- 语言 ----
+  if (wantLang) {
+    const cur = String(fp.language || fp.languages || '').trim();
+    if (!cur || force) {
+      if (cur !== wantLang) {
+        fp.language = wantLang;
+        fp.languages = wantLang;
+        changed.push(`语言 ${cur || '(空)'} → ${wantLang}`);
+      }
+    } else if (cur.toLowerCase() !== wantLang.toLowerCase()) {
+      conflicts.push(`语言与代理地区不符：${cur}，代理国家 ${cc} 应为 ${wantLang}`);
+      if (force) { fp.language = wantLang; fp.languages = wantLang; }
+    }
+  }
+
+  // ---- 经纬度 ----
+  if (geo.latitude != null && geo.longitude != null) {
+    if (fp.latitude == null || force) fp.latitude = Number(geo.latitude);
+    if (fp.longitude == null || force) fp.longitude = Number(geo.longitude);
+  }
+
+  return {
+    changed,
+    conflicts,
+    timezone: fp.timezone || '',
+    language: fp.language || fp.languages || '',
+  };
+}
+
+module.exports.alignRegionToProxy = alignRegionToProxy;
+module.exports.timezoneForCountry = timezoneForCountry;
+module.exports.languageForCountry = languageForCountry;
+module.exports.COUNTRY_MULTI_TIMEZONE = COUNTRY_MULTI_TIMEZONE;

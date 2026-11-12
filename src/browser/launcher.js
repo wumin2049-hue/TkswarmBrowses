@@ -5,7 +5,15 @@ const http = require('node:http');
 const net = require('node:net');
 const { PROFILES_DIR } = require('../config');
 const { resolveChromeExecutable } = require('./chrome-path');
-const { mergeFingerprint, parseResolution, buildUserAgent, buildUserAgentMetadata } = require('./fingerprint');
+const {
+  mergeFingerprint,
+  parseResolution,
+  buildUserAgent,
+  buildUserAgentMetadata,
+  assignHardwareFingerprint,
+  explicitFingerprintKeys,
+} = require('./fingerprint');
+const { timezoneForCountry, languageForCountry } = require('./geo-from-ip');
 const { buildInjectScript } = require('./fp-inject');
 const { injectFingerprintOnNewDocument, applyEmulation } = require('./cdp-inject');
 const { resolveChromeProxy } = require('./proxy-auth');
@@ -112,13 +120,17 @@ async function launchProfile(profile, options = {}) {
 
   const chromePath = resolveChromeExecutable();
   const userDataDir = profileDir(profile.id);
-  const fp = mergeFingerprint(JSON.parse(profile.fingerprint_json || '{}'));
+  const rawFp = JSON.parse(profile.fingerprint_json || '{}');
+  const fp = mergeFingerprint(rawFp);
+  // 每个环境按 ID 分配不同的 GPU / 核数 / 分辨率组合，避免所有环境共用同一套硬件指纹
+  assignHardwareFingerprint(fp, profile.id, explicitFingerprintKeys(rawFp));
   const { width, height } = parseResolution(fp.resolution);
   const userAgent = buildUserAgent(fp);
   const headless = Boolean(options.headless);
-  // 不写死时区：留空表示跟随系统。伪造一个错误的时区比不覆盖更危险。
-  const timezone = profile.timezone || '';
-  const locale = profile.language || fp.languages || 'en-US';
+  // 时区 / 语言一律以代理所在地区为准（创建环境时已探测并写入 profile），
+  // 缺失时按国家码兜底。留空表示跟随系统——伪造错误的时区比不覆盖更危险。
+  const timezone = profile.timezone || timezoneForCountry(profile.country, profile.longitude) || '';
+  const locale = profile.language || fp.languages || languageForCountry(profile.country) || 'en-US';
   const latitude = Number(profile.latitude || fp.latitude || 0);
   const longitude = Number(profile.longitude || fp.longitude || 0);
   const port = await getFreePort();

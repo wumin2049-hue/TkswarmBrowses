@@ -6,7 +6,7 @@ const { getCurrentUser } = require('../db');
 const { resolveEngine } = require('../browser/engine');
 const { DATA_ROOT } = require('../config');
 const { probeExitIp } = require('../browser/exit-ip');
-const { lookupGeoByIp, applyIpCreateFields } = require('../browser/geo-from-ip');
+const { lookupGeoByIp, applyIpCreateFields, alignRegionToProxy } = require('../browser/geo-from-ip');
 const { clearProfileCache, removeProfileDir } = require('../browser/profile-cleanup');
 const { exportProfilePack, importProfilePack } = require('../browser/profile-backup');
 const fs = require('node:fs');
@@ -138,7 +138,18 @@ async function resolveGeoFromProxy(proxyFields, fp, body = {}) {
     if (lastIp) geo = await lookupGeoByIp(lastIp).catch(() => ({}));
   }
   const fields = applyIpCreateFields(fp, geo, body);
-  return { lastIp, geo, fields };
+
+  // 时区 / 语言一律收口到代理 IP 所在国家：
+  // 「美国 IP + 上海时区 + 中文」这种组合是风控最容易识破的矛盾，
+  // 创建环境时一次性对齐，避免后面每个环节各写一套。
+  const region = alignRegionToProxy(fields, {
+    countryCode: geo.countryCode || fields.country || '',
+    timezone: geo.timezone || '',
+    latitude: fields.latitude,
+    longitude: fields.longitude,
+  });
+  // 用户显式指定 language/timezone 时不覆盖，只把冲突记下来回给调用方
+  return { lastIp, geo, fields, region };
 }
 
 function createRouter() {

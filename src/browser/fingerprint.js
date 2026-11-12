@@ -7,6 +7,8 @@ const CORE_VERSIONS = ['120', '124', '128', '131', '136', '140', '144', '148', '
  * 就能发现「UA 说 131、身上有 157 的特性」，判定为伪造环境。
  */
 let REAL_CORE_VERSION = '';
+// 单独记「是否已尝试过」，否则探测失败返回 '' 时每次调用都会重新扫盘
+let REAL_CORE_PROBED = false;
 
 /**
  * 用本机 Chrome 的真实主版本同步指纹版本。
@@ -16,7 +18,8 @@ let REAL_CORE_VERSION = '';
  * @returns {string} 真实主版本号，探测失败返回 ''
  */
 function syncRealCoreVersion() {
-  if (REAL_CORE_VERSION !== '') return REAL_CORE_VERSION;
+  if (REAL_CORE_PROBED) return REAL_CORE_VERSION;
+  REAL_CORE_PROBED = true;
   try {
     const { detectChromeMajorVersion } = require('./chrome-path');
     REAL_CORE_VERSION = String(detectChromeMajorVersion() || '').trim();
@@ -129,6 +132,86 @@ function buildSecChUa(fp = {}) {
   return `"Not-A.Brand";v="99", "Google Chrome";v="${ver}", "Chromium";v="${ver}"`;
 }
 
+/* ------------------------------------------------------------------ *
+ * 硬件指纹池
+ *
+ * 问题：过去 DEFAULT_FP 里写死 vendor='Google Inc. (NVIDIA)' +
+ * renderer='...GTX 1660...'，**所有环境拿到完全相同的 WebGL 指纹**。
+ * 平台侧只要把 WebGL renderer 当设备 ID 用，一眼就能把这些"不同人"
+ * 归并到同一台机器上，等于没做隔离。
+ *
+ * 做法：按环境 ID 哈希，从真实存在的 GPU 组合里确定性地选一个。
+ * - 同一环境每次打开结果一致（不能每次刷新都变，那是另一种异常）
+ * - 不同环境分布到不同组合（避免固定指纹）
+ * - vendor / renderer / 核数 / 内存 必须彼此搭配合理，不能出现
+ *   「Intel 核显配 32GB 显存」这种一眼假的组合
+ * ------------------------------------------------------------------ */
+const GPU_POOL = [
+  { vendor: 'Google Inc. (Intel)', renderer: 'ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)', cores: 8, mem: 8, dpr: 1 },
+  { vendor: 'Google Inc. (Intel)', renderer: 'ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0, D3D11)', cores: 4, mem: 8, dpr: 1 },
+  { vendor: 'Google Inc. (Intel)', renderer: 'ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)', cores: 8, mem: 16, dpr: 1.25 },
+  { vendor: 'Google Inc. (NVIDIA)', renderer: 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 Direct3D11 vs_5_0 ps_5_0, D3D11)', cores: 8, mem: 8, dpr: 1 },
+  { vendor: 'Google Inc. (NVIDIA)', renderer: 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1650 Direct3D11 vs_5_0 ps_5_0, D3D11)', cores: 6, mem: 8, dpr: 1 },
+  { vendor: 'Google Inc. (NVIDIA)', renderer: 'ANGLE (NVIDIA, NVIDIA GeForce RTX 2060 Direct3D11 vs_5_0 ps_5_0, D3D11)', cores: 12, mem: 16, dpr: 1 },
+  { vendor: 'Google Inc. (NVIDIA)', renderer: 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)', cores: 12, mem: 16, dpr: 1 },
+  { vendor: 'Google Inc. (NVIDIA)', renderer: 'ANGLE (NVIDIA, NVIDIA GeForce RTX 4060 Direct3D11 vs_5_0 ps_5_0, D3D11)', cores: 16, mem: 16, dpr: 1 },
+  { vendor: 'Google Inc. (AMD)', renderer: 'ANGLE (AMD, AMD Radeon RX 580 Direct3D11 vs_5_0 ps_5_0, D3D11)', cores: 8, mem: 8, dpr: 1 },
+  { vendor: 'Google Inc. (AMD)', renderer: 'ANGLE (AMD, AMD Radeon RX 6600 Direct3D11 vs_5_0 ps_5_0, D3D11)', cores: 12, mem: 16, dpr: 1 },
+  { vendor: 'Google Inc. (AMD)', renderer: 'ANGLE (AMD, AMD Radeon(TM) Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)', cores: 8, mem: 8, dpr: 1.25 },
+  { vendor: 'Google Inc. (Intel)', renderer: 'ANGLE (Intel, Intel(R) HD Graphics 520 Direct3D11 vs_5_0 ps_5_0, D3D11)', cores: 4, mem: 4, dpr: 1 },
+];
+
+/** 与 GPU 池解耦的分辨率候选（避免所有人都是 1920x1080） */
+const RESOLUTION_POOL = ['1920 x 1080', '1920 x 1080', '1920 x 1080', '2560 x 1440', '1600 x 900', '1536 x 864', '1366 x 768'];
+
+function hashSeedKey(key) {
+  let h = 2166136261;
+  const s = String(key || 'tkswarm');
+  for (let i = 0; i < s.length; i += 1) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+/**
+ * 按环境 ID 确定性地分配硬件指纹。
+ * 只填「用户没有显式配置」的项，显式配置优先。
+ *
+ * @param {object} fp mergeFingerprint 的结果（会被就地修改）
+ * @param {string} seedKey 环境 ID
+ * @param {Set<string>} explicitKeys 用户显式配置过的字段名
+ * @returns {object} fp
+ */
+function assignHardwareFingerprint(fp, seedKey, explicitKeys = new Set()) {
+  const seed = hashSeedKey(seedKey);
+  const gpu = GPU_POOL[seed % GPU_POOL.length];
+  const want = (k) => !explicitKeys.has(k);
+
+  if (want('webglVendor') || !fp.webglVendor) fp.webglVendor = gpu.vendor;
+  if (want('webglRenderer') || !fp.webglRenderer) fp.webglRenderer = gpu.renderer;
+  // 核数/内存与选中的 GPU 档次配套，避免「2 核配 RTX 4060」这类矛盾
+  if (want('hardwareConcurrency') || !fp.hardwareConcurrency) fp.hardwareConcurrency = gpu.cores;
+  if (want('deviceMemory') || !fp.deviceMemory) fp.deviceMemory = gpu.mem;
+  if (want('devicePixelRatio') || !fp.devicePixelRatio) fp.devicePixelRatio = gpu.dpr;
+  if (want('resolution') || !fp.resolution) {
+    fp.resolution = RESOLUTION_POOL[(seed >>> 8) % RESOLUTION_POOL.length];
+  }
+  // 供 fp-inject 生成 Audio/Canvas 噪声：每环境一个稳定种子
+  fp.fpSeed = seed;
+  return fp;
+}
+
+/** 判断哪些指纹字段是调用方显式指定的（用于尊重用户配置） */
+function explicitFingerprintKeys(input = {}) {
+  const src = (input && input.browserFingerPrint) || input || {};
+  const keys = new Set();
+  for (const k of ['webglVendor', 'webglRenderer', 'hardwareConcurrency', 'deviceMemory', 'devicePixelRatio', 'resolution']) {
+    if (src[k] !== undefined && src[k] !== null && src[k] !== '') keys.add(k);
+  }
+  return keys;
+}
+
 /**
  * 构造与 User-Agent 严格一致的 CDP userAgentMetadata
  */
@@ -196,6 +279,11 @@ module.exports = {
   syncRealCoreVersion,
   alignedCoreVersion,
   detectPlatformVersion,
+  assignHardwareFingerprint,
+  explicitFingerprintKeys,
+  hashSeedKey,
+  GPU_POOL,
+  RESOLUTION_POOL,
   CORE_VERSIONS,
   DEFAULT_FP,
 };

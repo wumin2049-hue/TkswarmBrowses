@@ -45,19 +45,42 @@ function buildInjectScript(seedKey, fp = {}) {
   }
 
   // —— Canvas 2D ——
+  //
+  // 旧实现有致命缺陷：先 getImageData → 加噪声 → putImageData **写回原画布**。
+  // 后果是画布内容被永久且**累积**地修改：第二次调用是在第一次已改的像素上再加一次，
+  // 于是同一个 canvas 连续读出两个不同值。
+  // 真实设备的 canvas 指纹是**完全稳定**的，因此「同一画布读出不同结果」比不伪造更显眼，
+  // 检测脚本只要连读两次就能确定这里被动过手脚。
+  //
+  // 正确做法：绝不写回原画布。在**离屏副本**上做变换，再从副本导出。
+  // 这样稳定性由 (SEED, 像素位置) 决定 —— 同一环境永远一致，不同环境各自不同。
+  const cloneWithNoise = (srcCanvas, width, height, salt) => {
+    const off = document.createElement('canvas');
+    off.width = srcCanvas.width || width;
+    off.height = srcCanvas.height || height;
+    const offCtx = off.getContext('2d');
+    if (!offCtx) return null;
+    offCtx.drawImage(srcCanvas, 0, 0);
+    const w = Math.min(off.width, width);
+    const h = Math.min(off.height, height);
+    if (w > 0 && h > 0) {
+      const img = offCtx.getImageData(0, 0, w, h);
+      for (let i = 0; i < img.data.length; i += 4) {
+        // 只动 R 通道且幅度极小：跨浏览器/跨设备本来就有的正常差异量级
+        img.data[i] = (img.data[i] + noiseByte(i + salt)) & 255;
+      }
+      offCtx.putImageData(img, 0, 0);
+    }
+    return off;
+  };
+
   try {
     const toDataURL = HTMLCanvasElement.prototype.toDataURL;
     HTMLCanvasElement.prototype.toDataURL = function(...args) {
       try {
-        const ctx = this.getContext('2d');
-        if (ctx && this.width && this.height) {
-          const w = Math.min(this.width, 16);
-          const h = Math.min(this.height, 16);
-          const img = ctx.getImageData(0, 0, w, h);
-          for (let i = 0; i < img.data.length; i += 4) {
-            img.data[i] = (img.data[i] + noiseByte(i)) & 255;
-          }
-          ctx.putImageData(img, 0, 0);
+        if (this.width && this.height) {
+          const off = cloneWithNoise(this, 16, 16, 17);
+          if (off) return toDataURL.apply(off, args);
         }
       } catch (e) {}
       return toDataURL.apply(this, args);
@@ -66,18 +89,28 @@ function buildInjectScript(seedKey, fp = {}) {
     if (toBlob) {
       HTMLCanvasElement.prototype.toBlob = function(cb, ...rest) {
         try {
-          const ctx = this.getContext('2d');
-          if (ctx && this.width && this.height) {
-            const img = ctx.getImageData(0, 0, Math.min(this.width, 8), Math.min(this.height, 8));
-            for (let i = 0; i < img.data.length; i += 4) {
-              img.data[i] = (img.data[i] + noiseByte(i + 99)) & 255;
-            }
-            ctx.putImageData(img, 0, 0);
+          if (this.width && this.height) {
+            const off = cloneWithNoise(this, 16, 16, 99);
+            if (off) return toBlob.call(off, cb, ...rest);
           }
         } catch (e) {}
         return toBlob.call(this, cb, ...rest);
       };
     }
+    // getImageData 返回的是副本，直接改副本不会污染画布；这里保持稳定
+    const getImageData = CanvasRenderingContext2D.prototype.getImageData;
+    CanvasRenderingContext2D.prototype.getImageData = function(...args) {
+      const img = getImageData.apply(this, args);
+      try {
+        if (img && img.data && img.data.length >= 4) {
+          const n = Math.min(img.data.length, 256 * 4);
+          for (let i = 0; i < n; i += 4) {
+            img.data[i] = (img.data[i] + noiseByte(i + 511)) & 255;
+          }
+        }
+      } catch (e) {}
+      return img;
+    };
   } catch (e) {}
 
   // —— WebGL ——
@@ -117,24 +150,52 @@ function buildInjectScript(seedKey, fp = {}) {
     if (typeof WebGL2RenderingContext !== 'undefined') patchReadPixels(WebGL2RenderingContext.prototype);
   } catch (e) {}
 
-  // —— AudioContext ——
+  // —— AudioContext 指纹 ——
+  //
+  // 真实检测做法：OfflineAudioContext 渲染一段振荡器 → 读 outputBuffer 的浮点样本 →
+  // 做加权累加得到一个小数（AudioContext fingerprint）。
+  // 旧实现只改 getChannelData 返回数组的前 32 个样本，且 length>100 才动手，
+  // 而指纹算法通常看的是**整个** buffer 的累积和，改 32 个样本几乎不影响结果；
+  // 同时每次 getChannelData 都在**同一份底层数据**上重复叠加，属于累积污染。
+  //
+  // 做法：处理一次就标记（WeakSet），保证同一 buffer 恒等；噪声幅度按样本索引确定性生成，
+  // 分布在整段 buffer 上，足以让累加值产生稳定但极小的偏移。
   try {
-    const AC = window.AudioContext || window.webkitAudioContext;
-    if (AC) {
-      const origCreate = AC.prototype.createAnalyser || AC.prototype.createOscillator;
-      const getChannelData = AudioBuffer.prototype.getChannelData;
-      AudioBuffer.prototype.getChannelData = function(channel) {
-        const data = getChannelData.call(this, channel);
+    const processed = new WeakSet();
+    const getChannelData = AudioBuffer.prototype.getChannelData;
+    AudioBuffer.prototype.getChannelData = function(channel) {
+      const data = getChannelData.call(this, channel);
+      try {
+        if (data && data.length && !processed.has(data)) {
+          processed.add(data);
+          const n = data.length;
+          // 均匀撒在整段 buffer 上，步长随长度自适应，避免大 buffer 卡顿
+          const step = n > 200000 ? Math.floor(n / 200000) * 997 + 1 : 997;
+          for (let i = 0; i < n; i += step) {
+            // ±1e-7 量级：远小于可听阈值，但足以改变累加结果
+            data[i] = data[i] + (rnd(i + 300) - 0.5) * 2e-7;
+          }
+          const last = n - 1;
+          if (last > 0) data[last] = data[last] + (rnd(last + 301) - 0.5) * 2e-7;
+        }
+      } catch (e) {}
+      return data;
+    };
+    // copyFromChannel 是另一条常见读取路径，同样不能漏
+    const copyFromChannel = AudioBuffer.prototype.copyFromChannel;
+    if (copyFromChannel) {
+      AudioBuffer.prototype.copyFromChannel = function(dest, channel, startInChannel) {
+        const r = copyFromChannel.call(this, dest, channel, startInChannel);
         try {
-          if (data && data.length > 100) {
-            for (let i = 0; i < 32; i += 1) {
-              data[i] = data[i] + (rnd(i + 300) - 0.5) * 1e-7;
+          if (dest && dest.length) {
+            const step = dest.length > 2000 ? Math.floor(dest.length / 2000) + 1 : 1;
+            for (let i = 0; i < dest.length; i += step) {
+              dest[i] = dest[i] + (rnd(i + 302) - 0.5) * 2e-7;
             }
           }
         } catch (e) {}
-        return data;
+        return r;
       };
-      void origCreate;
     }
   } catch (e) {}
 
@@ -309,22 +370,131 @@ function buildInjectScript(seedKey, fp = {}) {
   } catch (e) {}
 
   // —— WebRTC 防泄露 ——
+  //
+  // 目标：既要**不泄露**真实内网/公网 IP，又要**不暴露**「这里被禁用过」。
+  //
+  // 旧实现直接把 RTCPeerConnection 换成抛异常的构造函数，问题很大：
+  //   1. 真实 Chrome 一定存在 RTCPeerConnection，构造即抛 NotAllowedError 是极强的特征；
+  //   2. 部分站点的音视频/直播功能会直接崩，反而不自然；
+  //   3. 检测脚本 new RTCPeerConnection() 一 try 就能判定环境被改造。
+  //
+  // 现在保留原生构造器，只在**两个出口**上做净化：
+  //   - onicecandidate / addEventListener('icecandidate')：丢弃暴露真实 IP 的候选
+  //   - SDP 文本：删除 a=candidate 行中的 IP 字段，并对 host / srflx 候选降级
+  // 这样 API 语义正常（对象能建、能 offer/answer），但拿不到任何本地地址。
+  // 配合启动参数 --force-webrtc-ip-handling-policy=disable_non_proxied_udp
+  // （禁止非代理 UDP，从网络层阻断），形成双重保险。
   try {
-    const Blocked = function() {
-      throw new DOMException('WebRTC disabled by 第一页自研浏览器', 'NotAllowedError');
-    };
-    Blocked.prototype = {};
-    if (typeof window.RTCPeerConnection !== 'undefined') {
-      window.RTCPeerConnection = Blocked;
-    }
-    if (typeof window.webkitRTCPeerConnection !== 'undefined') {
-      window.webkitRTCPeerConnection = Blocked;
-    }
-    if (typeof navigator.mediaDevices !== 'undefined') {
+    const RTC = window.RTCPeerConnection;
+    if (typeof RTC === 'function') {
+      // 内网地址段 + mDNS .local，命中即视为泄露候选
+      const isLeakyCandidate = (candStr) => {
+        const s = String(candStr || '');
+        if (!s) return true;
+        // candidate:... typ host / srflx 且带 IP
+        if (/\\btyp\\s+host\\b/.test(s) || /\\btyp\\s+srflx\\b/.test(s)) return true;
+        if (/\\b(10|127)\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\b/.test(s)) return true;
+        if (/\\b192\\.168\\.\\d{1,3}\\.\\d{1,3}\\b/.test(s)) return true;
+        if (/\\b172\\.(1[6-9]|2\\d|3[01])\\.\\d{1,3}\\.\\d{1,3}\\b/.test(s)) return true;
+        if (/\\.local\\b/.test(s)) return true;
+        if (/\\b[0-9a-f]{1,4}(:[0-9a-f]{1,4}){2,7}\\b/i.test(s) && /candidate/i.test(s)) return true; // IPv6
+        return false;
+      };
+      const scrubSdp = (sdp) => String(sdp || '')
+        .split('\\r\\n')
+        .filter((line) => !(line.indexOf('a=candidate:') === 0 && isLeakyCandidate(line)))
+        .join('\\r\\n');
+
+      const scrubCandidateEvent = (ev) => {
+        try {
+          if (!ev) return ev;
+          const c = ev.candidate;
+          if (!c) return ev; // null candidate 表示收集结束，必须放行
+          if (isLeakyCandidate(c.candidate)) {
+            // 用空对象屏蔽细节，但不能返回 null（会被当成收集结束）
+            return Object.defineProperty(
+              Object.create(Object.getPrototypeOf(ev) || Object.prototype),
+              'candidate',
+              { value: null, configurable: true },
+            );
+          }
+        } catch (e) {}
+        return ev;
+      };
+
+      const patchEvents = (proto) => {
+        if (!proto || proto.__tkRtcPatched) return;
+        const addEventListener = proto.addEventListener;
+        if (typeof addEventListener === 'function') {
+          proto.addEventListener = function(type, listener, ...rest) {
+            if (type === 'icecandidate' && typeof listener === 'function') {
+              const wrapped = function(ev) {
+                const clean = scrubCandidateEvent(ev);
+                if (clean && clean.candidate === null && ev && ev.candidate) return undefined;
+                return listener.call(this, clean);
+              };
+              return addEventListener.call(this, type, wrapped, ...rest);
+            }
+            return addEventListener.call(this, type, listener, ...rest);
+          };
+        }
+        const setLocalDescription = proto.setLocalDescription;
+        if (typeof setLocalDescription === 'function') {
+          proto.setLocalDescription = function(desc) {
+            try {
+              if (desc && typeof desc === 'object' && typeof desc.sdp === 'string') {
+                desc = { type: desc.type, sdp: scrubSdp(desc.sdp) };
+              }
+            } catch (e) {}
+            return setLocalDescription.call(this, desc);
+          };
+        }
+        const createOffer = proto.createOffer;
+        if (typeof createOffer === 'function') {
+          proto.createOffer = function(...args) {
+            return createOffer.apply(this, args).then((desc) => {
+              try {
+                if (desc && typeof desc.sdp === 'string') {
+                  return { type: desc.type, sdp: scrubSdp(desc.sdp) };
+                }
+              } catch (e) {}
+              return desc;
+            });
+          };
+        }
+        proto.__tkRtcPatched = true;
+      };
+      patchEvents(RTC.prototype);
+
+      // onicecandidate 赋值路径（比 addEventListener 更常用）
       try {
-        navigator.mediaDevices.getUserMedia = function() {
-          return Promise.reject(new DOMException('Permission denied', 'NotAllowedError'));
-        };
+        const desc = Object.getOwnPropertyDescriptor(RTC.prototype, 'onicecandidate');
+        if (desc && desc.set) {
+          Object.defineProperty(RTC.prototype, 'onicecandidate', {
+            configurable: true,
+            get: desc.get,
+            set(fn) {
+              if (typeof fn !== 'function') return desc.set.call(this, fn);
+              const self = this;
+              return desc.set.call(this, function(ev) {
+                const clean = scrubCandidateEvent(ev);
+                if (clean && clean.candidate === null && ev && ev.candidate) return undefined;
+                return fn.call(self, clean);
+              });
+            },
+          });
+        }
+      } catch (e) {}
+
+      // getUserMedia：保持 API 形态，只拒绝授权，避免「函数不存在」这种硬特征
+      try {
+        if (navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === 'function') {
+          const origGum = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+          navigator.mediaDevices.getUserMedia = function(constraints) {
+            // 有真实摄像头时交给原生；无设备时按标准行为拒绝
+            return origGum(constraints);
+          };
+        }
       } catch (e) {}
     }
   } catch (e) {}
