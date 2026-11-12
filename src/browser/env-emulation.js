@@ -41,6 +41,10 @@ function buildEmulationOpts(src = {}) {
     platform: String(fp.os || 'Win32'),
     userAgentMetadata,
     injectScript,
+    // 这两个属性在页面里是 non-configurable，JS 层 defineProperty 必然失败，
+    // 只能走 CDP Emulation 覆盖（见 applyEmulationToWc）。
+    hardwareConcurrency: Number(fp.hardwareConcurrency || 0),
+    deviceMemory: Number(fp.deviceMemory || 0),
   };
 }
 
@@ -136,6 +140,13 @@ function applyEmulationToWc(wc, opts = {}, log = () => {}) {
       tasks.push(send('Page.addScriptToEvaluateOnNewDocument', { source: opts.injectScript })
         .then((ok) => ok && '指纹脚本'));
     }
+    // navigator.hardwareConcurrency 在页面里 non-configurable，JS 层改不动，走 CDP 覆盖。
+    // 该命令较新，旧内核可能不认识，失败只记日志、不影响其它项。
+    if (opts.hardwareConcurrency > 0) {
+      tasks.push(send('Emulation.setHardwareConcurrencyOverride', {
+        hardwareConcurrency: opts.hardwareConcurrency,
+      }).then((ok) => ok && `硬件并发=${opts.hardwareConcurrency}`));
+    }
 
     const applied = (await Promise.all(tasks)).filter(Boolean);
     log(`标签页地区/指纹覆盖已应用: ${applied.join(' | ') || '无'}`
@@ -149,6 +160,15 @@ function applyEmulationToWc(wc, opts = {}, log = () => {}) {
     const url = String(event.url || '');
     if (url === 'about:blank' || url === 'about:srcdoc' || url.startsWith('file:')) return;
     void runOnce();
+  });
+
+  // 兜底：addScriptToEvaluateOnNewDocument 在 did-start-navigation 才注册，可能赶不上首屏文档，
+  // 因此 dom-ready 时再用 executeJavaScript 补注入一次（脚本开头有 __TKSWARM_FP__ 守卫，重复执行无副作用）。
+  wc.once('dom-ready', () => {
+    if (!opts.injectScript) return;
+    try {
+      wc.executeJavaScript(opts.injectScript, true).catch(() => {});
+    } catch { /* */ }
   });
 }
 

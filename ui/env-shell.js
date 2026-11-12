@@ -194,11 +194,7 @@ function copyEnvInfo() {
   }).catch(() => {});
 }
 
-$('btn-env-info').onclick = () => {
-  const panel = $('env-info-panel');
-  const hidden = panel.classList.toggle('hidden');
-  if (!hidden) refreshEnvInfo();
-};
+$('btn-env-info').onclick = () => api.toggleEnvInfo?.();
 $('btn-close-env-info').onclick = () => $('env-info-panel').classList.add('hidden');
 $('btn-refresh-env-info').onclick = refreshEnvInfo;
 $('btn-copy-env-info').onclick = copyEnvInfo;

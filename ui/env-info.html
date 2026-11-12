@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>环境信息</title>
+  <style>
+    :root { color-scheme: light; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; overflow: hidden; }
+    body {
+      font: 12px/1.55 "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+      color: #0b1220; background: #fff; display: flex; flex-direction: column;
+      -webkit-font-smoothing: antialiased;
+    }
+    header {
+      display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+      border-bottom: 1px solid #e4e9f0; background: linear-gradient(180deg, #fafbfc, #fff);
+      flex-shrink: 0;
+    }
+    header strong { flex: 1; font-size: 13px; letter-spacing: -0.01em; }
+    header button {
+      border: none; background: none; color: #1d4ed8; font-size: 12px; font-weight: 600;
+      cursor: pointer; padding: 4px 6px; border-radius: 6px;
+    }
+    header button:hover { background: #eff6ff; }
+    #body { overflow-y: auto; padding: 12px 14px 16px; flex: 1; user-select: text; }
+    .muted { color: #7b8799; padding: 8px 0; }
+    .section { margin-bottom: 14px; }
+    .section h4 {
+      margin: 0 0 6px; font-size: 12px; font-weight: 700; color: #1d4ed8;
+      padding-bottom: 4px; border-bottom: 1px solid #e4e9f0;
+    }
+    table { width: 100%; border-collapse: collapse; }
+    td { padding: 3px 0; vertical-align: top; word-break: break-all; }
+    td.k { width: 118px; color: #7b8799; white-space: nowrap; padding-right: 8px; }
+    td.v { color: #0b1220; font-family: Consolas, "Cascadia Mono", monospace; font-size: 11.5px; }
+    td.v .warn { color: #e11d48; font-weight: 700; }
+    td.v .ok { color: #059669; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <header>
+    <strong>环境信息 · 风险参数</strong>
+    <button id="copy">复制</button>
+    <button id="refresh">刷新</button>
+    <button id="close">关闭</button>
+  </header>
+  <div id="body"><div class="muted">采集中…</div></div>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[c]));
+
+    function row(k, v, cls) {
+      return `<tr><td class="k">${esc(k)}</td><td class="v${cls ? ' ' + cls : ''}">${v}</td></tr>`;
+    }
+    function section(title, rows) {
+      return `<div class="section"><h4>${esc(title)}</h4><table>${rows}</table></div>`;
+    }
+
+    let lastData = null;
+
+    function build(data) {
+      const cfg = (data && data.config) || {};
+      const live = (data && data.live) || {};
+      const cfgProxy = cfg.proxyHost ? `${cfg.proxyHost}:${cfg.proxyPort || ''}` : '（未绑定）';
+      const s = [];
+
+      s.push(section('① 出口 / 地区（按代理）', [
+        row('代理地址', cfgProxy),
+        row('代理类型', esc(cfg.proxyType || '—')),
+        row('国家/地区', esc(cfg.country || '—')),
+        row('配置时区', esc(cfg.timezone || '—')),
+        row('配置语言', esc(cfg.locale || '—')),
+        row('经纬度', cfg.latitude != null && cfg.longitude != null ? `${cfg.latitude}, ${cfg.longitude}` : '—'),
+        row('出口IP', esc(cfg.lastIp || '（未探测）')),
+      ].join('')));
+
+      if (live && live.ok) {
+        s.push(section('② 站点实际读到', [
+          row('页面 URL', esc(live.url || '—')),
+          row('navigator.language', esc(live.language || '—')),
+          row('navigator.languages', esc(live.languages || '—')),
+          row('Intl 时区', esc(live.timezone || '—')),
+          row('时区偏移', live.tzOffsetMin != null ? `UTC${live.tzOffsetMin >= 0 ? '+' : ''}${live.tzOffsetMin / 60}h` : '—'),
+          row('本地时间', esc(live.localTime || '—')),
+        ].join('')));
+      }
+
+      const fp = (cfg && cfg.fp) || {};
+      const fpRows = [
+        row('User-Agent', esc(cfg.userAgent || (live && live.ok ? live.userAgent : '—'))),
+        row('平台', esc(fp.os || (live && live.ok ? live.platform : '—'))),
+        row('内核版本', esc(fp.coreVersion || '—')),
+        row('navigator.webdriver', live && live.ok ? (live.webdriver ? '<span class="warn">true（易被识别）</span>' : '<span class="ok">false</span>') : '—'),
+        row('硬件并发', live && live.ok ? esc(String(live.hardwareConcurrency)) : esc(fp.hardwareConcurrency != null ? String(fp.hardwareConcurrency) : '—')),
+        row('设备内存', live && live.ok ? esc(String(live.deviceMemory)) : esc(fp.deviceMemory != null ? String(fp.deviceMemory) : '—')),
+        row('屏幕 / 分辨率', live && live.ok ? esc(live.screen + ' / dpr ' + live.devicePixelRatio) : esc(fp.resolution || '—')),
+        row('WebGL 厂商', live && live.ok && live.webgl ? esc(live.webgl.vendor) : esc(fp.webglVendor || '—')),
+        row('WebGL 渲染器', live && live.ok && live.webgl ? esc(live.webgl.renderer) : esc(fp.webglRenderer || '—')),
+      ];
+      if (live && live.ok && live.uaData) {
+        fpRows.push(
+          row('CH brands', esc(live.uaData.brands || '—')),
+          row('CH platform', esc(`${live.uaData.platform || '—'} ${live.uaData.platformVersion || ''}`.trim())),
+          row('CH mobile', esc(String(live.uaData.mobile))),
+        );
+      }
+      s.push(section('③ 浏览器指纹', fpRows.join('')));
+      return s.join('');
+    }
+
+    function render(data) {
+      lastData = data;
+      $('body').innerHTML = build(data) || '<div class="muted">暂无数据</div>';
+    }
+
+    function copyText() {
+      if (!lastData) return;
+      const cfg = lastData.config || {};
+      const live = lastData.live || {};
+      const L = [];
+      const push = (k, v) => L.push(`${k}: ${v}`);
+      push('代理地址', `${cfg.proxyHost || ''}:${cfg.proxyPort || ''}`);
+      push('代理类型', cfg.proxyType || '');
+      push('国家/地区', cfg.country || '');
+      push('配置时区', cfg.timezone || '');
+      push('配置语言', cfg.locale || '');
+      push('经纬度', cfg.latitude != null ? `${cfg.latitude}, ${cfg.longitude}` : '');
+      push('出口IP', cfg.lastIp || '');
+      if (live.ok) {
+        push('navigator.language', live.language || '');
+        push('navigator.languages', live.languages || '');
+        push('Intl时区', live.timezone || '');
+        push('时区偏移', live.tzOffsetMin != null ? `UTC${live.tzOffsetMin >= 0 ? '+' : ''}${live.tzOffsetMin / 60}h` : '');
+        push('本地时间', live.localTime || '');
+        push('User-Agent', live.userAgent || '');
+        push('webdriver', String(live.webdriver));
+        push('硬件并发', live.hardwareConcurrency);
+        push('设备内存', live.deviceMemory);
+        push('屏幕', live.screen);
+        push('dpr', live.devicePixelRatio);
+        if (live.webgl) {
+          push('WebGL厂商', live.webgl.vendor);
+          push('WebGL渲染器', live.webgl.renderer);
+        }
+      }
+      const t = L.join('\n');
+      (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(() => {
+        $('copy').textContent = '已复制';
+        setTimeout(() => { $('copy').textContent = '复制'; }, 1200);
+      }).catch(() => {});
+    }
+
+    async function load() {
+      $('body').innerHTML = '<div class="muted">采集中…</div>';
+      try { render(await window.envInfo.get()); }
+      catch (e) { $('body').innerHTML = `<div class="muted">采集失败：${esc(e && e.message || e)}</div>`; }
+    }
+
+    $('refresh').onclick = async () => {
+      try { render(await window.envInfo.refresh()); }
+      catch (e) { $('body').innerHTML = `<div class="muted">刷新失败：${esc(e && e.message || e)}</div>`; }
+    };
+    $('copy').onclick = copyText;
+    $('close').onclick = () => window.envInfo.close();
+
+    load();
+  </script>
+</body>
+</html>

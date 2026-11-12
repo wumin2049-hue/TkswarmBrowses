@@ -206,10 +206,11 @@ function buildInjectScript(seedKey, fp = {}) {
         Object.defineProperty(obj, key, { get: () => value, configurable: true });
       } catch (e) {}
     };
-    // 浏览器标识类属性一律交给 CDP 的 UA 覆盖（含 Client Hints 元数据）处理，页面内不再重写，
-    // 避免与 HTTP 请求头不一致导致 TikTok 验证码 SDK 加载失败（弹框空白）。
-    def(Navigator.prototype, 'hardwareConcurrency', ${hardwareConcurrency});
-    def(Navigator.prototype, 'deviceMemory', ${deviceMemory});
+    // 注意：hardwareConcurrency / deviceMemory 在真实 Chrome 里是 non-configurable，
+    // 这里 Object.defineProperty 必然抛 TypeError（被上面 def 静默吞掉），覆盖无效。
+    // 这两个值改由主进程 CDP 的 Emulation.setHardwareConcurrencyOverride 处理，
+    // 不要在这里再尝试，否则会给人「已覆盖」的假象、实际泄露本机值。
+    // 浏览器标识类属性（platform/languages/language 是 configurable 的，可在此覆盖）
     def(Navigator.prototype, 'platform', ${JSON.stringify(platform)});
     def(Navigator.prototype, 'languages', Object.freeze(${JSON.stringify(languages)}));
     def(Navigator.prototype, 'language', ${JSON.stringify(languages[0] || 'en-US')});

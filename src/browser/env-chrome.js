@@ -10,6 +10,8 @@ const { loadAppIcon, applyWindowIcon } = require('./app-icon');
 const TOOLBAR_H = 92;
 const SHELL_HTML = path.join(__dirname, '../../ui/env-shell.html');
 const SHELL_PRELOAD = path.join(__dirname, '../../electron/env-shell-preload.js');
+const ENV_INFO_HTML = path.join(__dirname, '../../ui/env-info.html');
+const ENV_INFO_PRELOAD = path.join(__dirname, '../../electron/env-info-preload.js');
 const MAX_HISTORY = 80;
 
 function isShellUrl(url) {
@@ -210,6 +212,64 @@ async function createEnvChrome(opts) {
     }
   }
 
+  async function gatherEnvInfo() {
+    const wc = activeContentWc();
+    let live = null;
+    if (wc && !wc.isDestroyed()) {
+      try {
+        const raw = await wc.executeJavaScript(ENV_DIAG_SNIPPET, true);
+        live = JSON.parse(raw || 'null');
+      } catch { /* 采集失败不阻断 */ }
+    }
+    return { config: envInfo || null, live };
+  }
+
+  // 环境信息面板：内容页是叠加在窗口之上的 BrowserView，工具栏里的 fixed 面板会被它盖住，
+  // 因此信息面板改用独立无边框子窗口，悬浮在内容页之上，层级不再受 BrowserView 遮挡。
+  let envInfoPopup = null;
+  const envInfoChan = `${ipcPrefix}-popup`;
+  function closeEnvInfoPopup() {
+    if (envInfoPopup && !envInfoPopup.isDestroyed()) envInfoPopup.close();
+    envInfoPopup = null;
+  }
+  function toggleEnvInfoPopup() {
+    if (envInfoPopup && !envInfoPopup.isDestroyed()) {
+      envInfoPopup.focus();
+      return;
+    }
+    envInfoPopup = new BrowserWindow({
+      width: 480,
+      height: 600,
+      minWidth: 360,
+      minHeight: 300,
+      parent: win,
+      modal: false,
+      frame: false,
+      resizable: true,
+      show: false,
+      title: '环境信息',
+      backgroundColor: '#ffffff',
+      webPreferences: {
+        session: uiSes,
+        preload: ENV_INFO_PRELOAD,
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: false,
+        additionalArguments: [`--env-info-chan=${envInfoChan}`],
+      },
+    });
+    ipcMain.handle(`${envInfoChan}:data`, () => gatherEnvInfo());
+    ipcMain.handle(`${envInfoChan}:refresh`, () => gatherEnvInfo());
+    ipcMain.once(`${envInfoChan}:close`, () => closeEnvInfoPopup());
+    envInfoPopup.once('ready-to-show', () => { envInfoPopup?.show(); });
+    envInfoPopup.on('closed', () => {
+      ipcMain.removeHandler(`${envInfoChan}:data`);
+      ipcMain.removeHandler(`${envInfoChan}:refresh`);
+      envInfoPopup = null;
+    });
+    envInfoPopup.loadFile(ENV_INFO_HTML).catch((e) => log(`环境信息窗口加载失败: ${e?.message || e}`));
+  }
+
   function pauseInactiveTabs(exceptId) {
     for (const [tid, view] of views) {
       if (tid === exceptId) continue;
@@ -378,17 +438,8 @@ async function createEnvChrome(opts) {
 
   const ipcHandlers = [
     [`${ipcPrefix}:ready`, async () => sendState()],
-    [`${ipcPrefix}:env-info`, async () => {
-      const wc = activeContentWc();
-      let live = null;
-      if (wc && !wc.isDestroyed()) {
-        try {
-          const raw = await wc.executeJavaScript(ENV_DIAG_SNIPPET, true);
-          live = JSON.parse(raw || 'null');
-        } catch { /* 采集失败不阻断 */ }
-      }
-      return { config: envInfo || null, live };
-    }],
+    [`${ipcPrefix}:env-info`, async () => gatherEnvInfo()],
+    [`${ipcPrefix}:env-info-window`, async () => { toggleEnvInfoPopup(); }],
     [`${ipcPrefix}:navigate`, async (_e, url) => {
       await loadInActiveView(url);
       sendState();
@@ -462,6 +513,9 @@ async function createEnvChrome(opts) {
     for (const [channel] of ipcHandlers) {
       try { ipcMain.removeHandler(channel); } catch { /* */ }
     }
+    try { closeEnvInfoPopup(); } catch { /* */ }
+    try { ipcMain.removeHandler(`${envInfoChan}:data`); } catch { /* */ }
+    try { ipcMain.removeHandler(`${envInfoChan}:refresh`); } catch { /* */ }
     for (const view of views.values()) {
       try { view.webContents.destroy(); } catch { /* */ }
     }
