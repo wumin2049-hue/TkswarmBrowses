@@ -364,6 +364,21 @@ app.whenReady().then(async () => {
   });
   logLine(`地区配置: 时区=${emulationOpts.timezone || '(空，使用本机)'} 语言=${emulationOpts.locale} 定位=${emulationOpts.latitude},${emulationOpts.longitude}`);
 
+  // 供右上角「信息」面板展示的环境参数（风险排查用）
+  const envInfo = {
+    proxyHost: cfg.proxyMeta?.proxy_host || '',
+    proxyPort: cfg.proxyMeta?.proxy_port || '',
+    proxyType: cfg.proxyMeta?.proxy_type || '',
+    country: cfg.country || '',
+    timezone: cfg.timezone || '',
+    locale: cfg.locale || cfg.acceptLanguages || '',
+    latitude: cfg.latitude,
+    longitude: cfg.longitude,
+    lastIp: cfg.lastIp || cfg.last_ip || '',
+    userAgent: cfg.userAgent || '',
+    fp: cfg.fp || {},
+  };
+
   const chrome = await createEnvChrome({
     profileId,
     userDataDir: String(cfg.userDataDir || ''),
@@ -374,6 +389,7 @@ app.whenReady().then(async () => {
     shellSession: shellSes,
     contentSession: contentSes,
     ensureContentProxy,
+    envInfo,
     onContentWebContents: (wc) => {
       bindContentWatchers(wc, proxyDisplay);
       return applyEmulationToWc(wc, emulationOpts, logLine);

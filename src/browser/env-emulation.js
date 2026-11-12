@@ -95,40 +95,49 @@ function applyEmulationToWc(wc, opts = {}, log = () => {}) {
       log(`标签页 debugger 附加失败，地区/指纹覆盖未应用: ${error?.message || error}`);
       return;
     }
-    const send = (method, params = {}) => withTimeout(
-      dbg.sendCommand(method, params), 2500, method,
+    const send = (method, params = {}, ms = 2500) => withTimeout(
+      dbg.sendCommand(method, params), ms, method,
     ).then(() => true, (error) => {
       log(`${method} 失败: ${error?.message || error}`);
       return false;
     });
 
-    const applied = [];
+    // 关键：5 条命令必须并发下发，不能串行 await。
+    // 串行时 UA（带 userAgentMetadata 较慢）会拖到 ~2s 才轮到发时区，
+    // 此刻页面已开始加载、渲染进程繁忙，时区命令排队超时被放弃，
+    // 最终「时区」缺失 → TikTok 判定 IP 与浏览器时区不一致 → 弹 App 扫码验证。
+    // 并发下发让时区与 UA 同时到达，赶在首屏 JS 读取时区之前生效。
+    const tasks = [];
     if (opts.userAgent) {
-      const ok = await send('Emulation.setUserAgentOverride', {
+      tasks.push(send('Emulation.setUserAgentOverride', {
         userAgent: opts.userAgent,
         acceptLanguage: acceptLanguageOf(opts.locale),
         platform: opts.platform || 'Win32',
         ...(opts.userAgentMetadata ? { userAgentMetadata: opts.userAgentMetadata } : {}),
-      });
-      if (ok) applied.push('UA/ClientHints');
+      }).then((ok) => ok && 'UA/ClientHints'));
     }
-    if (opts.timezone && await send('Emulation.setTimezoneOverride', { timezoneId: opts.timezone })) {
-      applied.push(`时区=${opts.timezone}`);
+    if (opts.timezone) {
+      // 时区是对齐的命门，单独放宽超时，避免页面加载瞬间被误杀
+      tasks.push(send('Emulation.setTimezoneOverride', { timezoneId: opts.timezone }, 4000)
+        .then((ok) => ok && `时区=${opts.timezone}`));
     }
-    if (opts.locale && await send('Emulation.setLocaleOverride', { locale: String(opts.locale).split(',')[0].trim() })) {
-      applied.push(`语言=${opts.locale}`);
+    if (opts.locale) {
+      tasks.push(send('Emulation.setLocaleOverride', { locale: String(opts.locale).split(',')[0].trim() })
+        .then((ok) => ok && `语言=${opts.locale}`));
     }
     const hasGeo = Number.isFinite(opts.latitude) && Number.isFinite(opts.longitude)
       && (opts.latitude !== 0 || opts.longitude !== 0);
-    if (hasGeo && await send('Emulation.setGeolocationOverride', {
-      latitude: opts.latitude, longitude: opts.longitude, accuracy: 100,
-    })) {
-      applied.push(`定位=${opts.latitude.toFixed(2)},${opts.longitude.toFixed(2)}`);
+    if (hasGeo) {
+      tasks.push(send('Emulation.setGeolocationOverride', {
+        latitude: opts.latitude, longitude: opts.longitude, accuracy: 100,
+      }).then((ok) => ok && `定位=${opts.latitude.toFixed(2)},${opts.longitude.toFixed(2)}`));
     }
-    if (opts.injectScript && await send('Page.addScriptToEvaluateOnNewDocument', { source: opts.injectScript })) {
-      applied.push('指纹脚本');
+    if (opts.injectScript) {
+      tasks.push(send('Page.addScriptToEvaluateOnNewDocument', { source: opts.injectScript })
+        .then((ok) => ok && '指纹脚本'));
     }
 
+    const applied = (await Promise.all(tasks)).filter(Boolean);
     log(`标签页地区/指纹覆盖已应用: ${applied.join(' | ') || '无'}`
       + (opts.timezone ? '' : '（⚠ 未解析到代理时区，窗口将使用本机时区）'));
   };

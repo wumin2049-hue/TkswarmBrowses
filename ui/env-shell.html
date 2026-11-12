@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>环境浏览器</title>
   <link rel="icon" type="image/png" href="assets/app-icon.png" />
-  <link rel="stylesheet" href="env-shell.css?v=2.2" />
+  <link rel="stylesheet" href="env-shell.css?v=2.3" />
 </head>
 <body>
   <header class="chrome-bar">
@@ -33,6 +33,9 @@
       <button type="button" class="nav-btn" id="btn-devtools" title="开发者工具（F12）Console / Network / Sources">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 6l-5 6 5 6"/><path d="M16 6l5 6-5 6"/><path d="M14 4l-4 16"/></svg>
       </button>
+      <button type="button" class="nav-btn" id="btn-env-info" title="环境信息（IP / 时区 / 语言 / 指纹等风险参数）">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 8h.01"/></svg>
+      </button>
       <button type="button" class="nav-btn nav-close" id="btn-close-win" title="关闭窗口">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
       </button>
@@ -50,6 +53,16 @@
       <button type="button" id="btn-close-history" class="link-btn">关闭</button>
     </div>
     <ul id="history-list" class="history-list"></ul>
+  </aside>
+
+  <aside id="env-info-panel" class="env-info-panel hidden">
+    <div class="env-info-head">
+      <strong>环境信息 · 风险参数</strong>
+      <button type="button" id="btn-copy-env-info" class="link-btn" title="复制全部参数">复制</button>
+      <button type="button" id="btn-refresh-env-info" class="link-btn" title="重新采集">刷新</button>
+      <button type="button" id="btn-close-env-info" class="link-btn">关闭</button>
+    </div>
+    <div id="env-info-body" class="env-info-body"><div class="muted">采集失败或页面未加载，请先打开目标页面再点「刷新」。</div></div>
   </aside>
 
   <script src="env-shell.js"></script>

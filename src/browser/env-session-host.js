@@ -215,6 +215,19 @@ async function launchProfileInProcess(profile, options = {}) {
     shellSession: shellSes,
     contentSession: contentSes,
     ensureContentProxy,
+    envInfo: {
+      proxyHost: profile.proxy_host || '',
+      proxyPort: profile.proxy_port || '',
+      proxyType: profile.proxy_type || '',
+      country: String(profile.country || ''),
+      timezone,
+      locale,
+      latitude: Number(profile.latitude || fp.latitude || 0),
+      longitude: Number(profile.longitude || fp.longitude || 0),
+      lastIp: String(profile.last_ip || profile.lastIp || ''),
+      userAgent,
+      fp,
+    },
     onContentWebContents: (wc) => {
       bindContentEvents(wc);
       applyEmulationToWc(wc, emulationOpts, (msg) => appendEnvLog(id, msg));

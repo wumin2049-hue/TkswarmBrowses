@@ -17,6 +17,66 @@ function isShellUrl(url) {
   return /env-shell\.html/i.test(u) || u.startsWith('data:text/html');
 }
 
+/**
+ * 在内容页上下文里采集「站点实际看到的」浏览器环境参数（风控判定依据）。
+ * 返回一个 JSON 字符串；采集失败也不影响页面。
+ */
+const ENV_DIAG_SNIPPET = `(function () {
+  var out = { ok: false };
+  try {
+    var n = navigator;
+    var uaData = n.userAgentData;
+    var tz = '';
+    try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (e) {}
+    var d = new Date();
+    var gl = null;
+    try {
+      var c = document.createElement('canvas');
+      var g = c.getContext('webgl') || c.getContext('experimental-webgl');
+      if (g) {
+        var ext = g.getExtension('WEBGL_debug_renderer_info');
+        gl = {
+          vendor: ext ? g.getParameter(ext.UNMASKED_VENDOR_WEBGL) : (g.getParameter(g.VENDOR) || ''),
+          renderer: ext ? g.getParameter(ext.UNMASKED_RENDERER_WEBGL) : (g.getParameter(g.RENDERER) || ''),
+        };
+      }
+    } catch (e) {}
+    out = {
+      ok: true,
+      url: location.href,
+      userAgent: n.userAgent,
+      platform: n.platform,
+      vendor: n.vendor,
+      language: n.language,
+      languages: (n.languages || []).join(','),
+      timezone: tz,
+      tzOffsetMin: -d.getTimezoneOffset(),
+      localTime: d.toString(),
+      hardwareConcurrency: n.hardwareConcurrency,
+      deviceMemory: n.deviceMemory != null ? n.deviceMemory : '',
+      maxTouchPoints: n.maxTouchPoints,
+      webdriver: n.webdriver,
+      screen: screen.width + 'x' + screen.height,
+      inner: window.innerWidth + 'x' + window.innerHeight,
+      devicePixelRatio: window.devicePixelRatio,
+      colorDepth: screen.colorDepth,
+      doNotTrack: n.doNotTrack,
+      cookieEnabled: n.cookieEnabled,
+      onLine: n.onLine,
+      webgl: gl,
+      uaData: uaData ? {
+        brands: (uaData.brands || []).map(function (b) { return b.brand + ' ' + b.version; }).join(' | '),
+        mobile: uaData.mobile,
+        platform: uaData.platform,
+        platformVersion: uaData.platformVersion,
+      } : null,
+    };
+  } catch (e) {
+    out.error = String(e && e.message || e);
+  }
+  return JSON.stringify(out);
+})()`;
+
 function pickBrowsingCdpPage(pages) {
   const list = Array.isArray(pages) ? pages : [];
   return list.find((t) => {
@@ -82,6 +142,7 @@ async function createEnvChrome(opts) {
     ses,
     ensureContentProxy,
     onContentWebContents,
+    envInfo = null,
     headless = false,
     log = () => {},
   } = opts;
@@ -317,6 +378,17 @@ async function createEnvChrome(opts) {
 
   const ipcHandlers = [
     [`${ipcPrefix}:ready`, async () => sendState()],
+    [`${ipcPrefix}:env-info`, async () => {
+      const wc = activeContentWc();
+      let live = null;
+      if (wc && !wc.isDestroyed()) {
+        try {
+          const raw = await wc.executeJavaScript(ENV_DIAG_SNIPPET, true);
+          live = JSON.parse(raw || 'null');
+        } catch { /* 采集失败不阻断 */ }
+      }
+      return { config: envInfo || null, live };
+    }],
     [`${ipcPrefix}:navigate`, async (_e, url) => {
       await loadInActiveView(url);
       sendState();

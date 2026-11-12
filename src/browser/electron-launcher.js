@@ -165,6 +165,8 @@ async function launchProfileElectron(profile, options = {}) {
     locale,
     latitude: Number(profile.latitude || fp.latitude || 0),
     longitude: Number(profile.longitude || fp.longitude || 0),
+    country: String(profile.country || ''),
+    lastIp: String(profile.last_ip || profile.lastIp || ''),
     softwareRender,
   };
 
