@@ -134,6 +134,71 @@ function buildTimezoneScript(timezone) {
   return `(${tzPatch.toString()})(${JSON.stringify(tz)});`;
 }
 
+/**
+ * Worker 全局里的 navigator 补丁（toString 序列化后经 CDP Runtime.evaluate 注入）。
+ * 页面主线程已被覆盖，但 Dedicated/Shared/Service Worker 是独立全局，
+ * 风控脚本在 Worker 里再读一遍 UA / 语言 / 核数，若仍是本机值就会与页面对不上。
+ */
+function workerPatch(CFG) {
+  try {
+    const WN = self.WorkerNavigator && self.WorkerNavigator.prototype;
+    if (!WN) return;
+    const nativeToString = Function.prototype.toString;
+    const masked = new WeakMap();
+    const find = (o, k) => {
+      for (let p = o; p; p = Object.getPrototypeOf(p)) {
+        const d = Object.getOwnPropertyDescriptor(p, k);
+        if (d) return d;
+      }
+      return null;
+    };
+    const mask = (fn, orig) => {
+      try {
+        masked.set(fn, nativeToString.call(orig));
+        Object.defineProperty(fn, 'name', { value: orig.name, configurable: true });
+        Object.defineProperty(fn, 'length', { value: orig.length, configurable: true });
+      } catch (e) { /* */ }
+    };
+    const toStr = function toString() {
+      const m = masked.get(this);
+      return m !== undefined ? m : nativeToString.call(this);
+    };
+    mask(toStr, nativeToString);
+    Object.defineProperty(Function.prototype, 'toString', { value: toStr, writable: true, configurable: true });
+    const def = (k, v) => {
+      try {
+        const orig = find(WN, k);
+        if (!orig || typeof orig.get !== 'function') return;
+        const getter = function () { return v; };
+        Object.defineProperty(WN, k, { get: getter, set: undefined, enumerable: orig.enumerable, configurable: true });
+        mask(getter, orig.get);
+      } catch (e) { /* non-configurable 时忽略，交给 CDP 覆盖 */ }
+    };
+    if (CFG.userAgent) {
+      def('userAgent', CFG.userAgent);
+      def('appVersion', CFG.userAgent.replace(/^Mozilla\//, ''));
+    }
+    if (CFG.platform) def('platform', CFG.platform);
+    if (CFG.languages && CFG.languages.length) {
+      def('language', CFG.languages[0]);
+      def('languages', Object.freeze(CFG.languages.slice()));
+    }
+    if (CFG.hardwareConcurrency > 0) def('hardwareConcurrency', CFG.hardwareConcurrency);
+    if (CFG.deviceMemory > 0) def('deviceMemory', CFG.deviceMemory);
+  } catch (e) { /* */ }
+}
+
+function buildWorkerScript(cfg) {
+  try {
+    const parts = [`(${workerPatch.toString()})(${JSON.stringify(cfg)});`];
+    if (cfg.timezone) {
+      // tzPatch 里引用了 window，Worker 里没有：用局部变量别名，避免给 Worker 全局多出一个 window
+      parts.push(`try{(function(){var window=self;(${tzPatch.toString()})(${JSON.stringify(cfg.timezone)});})();}catch(e){}`);
+    }
+    return parts.join('\n');
+  } catch { return ''; }
+}
+
 function buildEmulationOpts(src = {}) {
   const fp = src.fp || {};
   const locale = String(src.locale || fp.languages || 'en-US');
@@ -142,7 +207,8 @@ function buildEmulationOpts(src = {}) {
     injectScript = buildInjectScript(String(src.profileId || ''), {
       ...fp,
       userAgent: src.userAgent,
-      languages: locale,
+      // navigator.languages 必须与 Accept-Language 一致（真实 Chrome 两者同源，如 id-ID,id）
+      languages: acceptLanguageOf(locale),
       os: fp.os,
     });
   } catch { /* 注入脚本生成失败不阻断打开 */ }
@@ -166,6 +232,15 @@ function buildEmulationOpts(src = {}) {
     // 只能走 CDP Emulation 覆盖（见 applyEmulationToWc）。
     hardwareConcurrency: Number(fp.hardwareConcurrency || 0),
     deviceMemory: Number(fp.deviceMemory || 0),
+    // Worker / SharedWorker / ServiceWorker 里的 navigator 与时区也要与页面一致
+    workerScript: buildWorkerScript({
+      userAgent: String(src.userAgent || ''),
+      platform: String(fp.os || 'Win32'),
+      languages: acceptLanguageOf(locale).split(',').map((x) => x.trim()).filter(Boolean),
+      hardwareConcurrency: Number(fp.hardwareConcurrency || 0),
+      deviceMemory: Number(fp.deviceMemory || 0),
+      timezone: String(src.timezone || ''),
+    }),
   };
 }
 
@@ -212,6 +287,8 @@ function applyEmulationToWc(wc, opts = {}, log = () => {}) {
   // 此后 Emulation 状态会丢失（页面退回本机时区）。因此每次主 frame 导航都重新下发，
   // 命令本身是幂等的；只有「指纹脚本」注册一次（debugger 脱离后才重新注册）。
   let scriptInstalled = false;
+  let workersHooked = false;
+  let workerLogCount = 0;
   let applying = false;
   let pendingReason = '';
   const runOnce = async (reason = '导航') => {
@@ -231,9 +308,44 @@ function applyEmulationToWc(wc, opts = {}, log = () => {}) {
       }
     }
   };
+  // Worker 自动附加：Worker 一启动就暂停，先下发覆盖再放行（无论成败都必须 runIfWaitingForDebugger，否则 Worker 会卡死）。
+  try {
+    wc.debugger.on('message', (_e, method, params, sessionId) => {
+      if (method !== 'Target.attachedToTarget') return;
+      const sid = params && params.sessionId;
+      if (!sid) return;
+      const info = (params && params.targetInfo) || {};
+      const dbg = wc.debugger;
+      const call = (m, p, ms = 1500) => withTimeout(dbg.sendCommand(m, p, sid), ms, m).then(() => true, () => false);
+      void (async () => {
+        try {
+          if (/worker/i.test(String(info.type || '')) && opts.workerScript) {
+            const results = await Promise.all([
+              opts.userAgent ? call('Emulation.setUserAgentOverride', {
+                userAgent: opts.userAgent,
+                acceptLanguage: acceptLanguageOf(opts.locale),
+                platform: opts.platform || 'Win32',
+                ...(opts.userAgentMetadata ? { userAgentMetadata: opts.userAgentMetadata } : {}),
+              }) : false,
+              opts.hardwareConcurrency > 0 ? call('Emulation.setHardwareConcurrencyOverride', { hardwareConcurrency: opts.hardwareConcurrency }) : false,
+              opts.timezone ? call('Emulation.setTimezoneOverride', { timezoneId: opts.timezone }) : false,
+              call('Runtime.evaluate', { expression: opts.workerScript, silent: true }),
+            ]);
+            if (workerLogCount < 6) {
+              workerLogCount += 1;
+              log(`Worker 覆盖(${info.type}) UA=${results[0] ? '√' : '×'} 并发=${results[1] ? '√' : '×'} 时区=${results[2] ? '√' : '×'} 脚本=${results[3] ? '√' : '×'} ${String(info.url || '').slice(0, 80)}`);
+            }
+          }
+        } catch { /* */ } finally {
+          if (params && params.waitingForDebugger) await call('Runtime.runIfWaitingForDebugger', {}, 3000);
+        }
+      })();
+    });
+  } catch { /* */ }
   try {
     wc.debugger.on('detach', (_e, why) => {
       scriptInstalled = false;
+      workersHooked = false;
       log(`标签页 debugger 已脱离(${why})，Emulation 覆盖随之清空，稍后自动重新附加并下发`);
       // 脱离（如打开 DevTools 把 debugger 顶掉）会立刻清空时区等覆盖，页面退回本机时区；
       // 不等下一次导航，延迟片刻后直接重新附加下发。
@@ -305,6 +417,21 @@ function applyEmulationToWc(wc, opts = {}, log = () => {}) {
       }).then((ok) => ok && `硬件并发=${opts.hardwareConcurrency}`));
     }
 
+    // 让 Worker / SharedWorker / ServiceWorker 也拿到同样的覆盖（每次 debugger 附加后只设一次）。
+    // 设环境变量 TKSWARM_WORKER_EMU=0 可整体关闭，便于排查 Worker 相关问题。
+    if (!workersHooked && opts.workerScript && String(process.env.TKSWARM_WORKER_EMU || '') !== '0') {
+      workersHooked = true;
+      tasks.push(send('Target.setAutoAttach', {
+        autoAttach: true,
+        waitForDebuggerOnStart: true,
+        flatten: true,
+        filter: [{ type: 'worker' }, { type: 'service_worker' }, { type: 'shared_worker' }, { exclude: true }],
+      }).then((ok) => {
+        if (!ok) workersHooked = false;
+        return ok && 'Worker覆盖';
+      }));
+    }
+
     const applied = (await Promise.all(tasks)).filter(Boolean);
     log(`标签页地区/指纹覆盖已应用(${reason}): ${applied.join(' | ') || '无'}`
       + (opts.timezone ? '' : '（⚠ 未解析到代理时区，窗口将使用本机时区）'));
@@ -320,7 +447,7 @@ function applyEmulationToWc(wc, opts = {}, log = () => {}) {
   });
 
   // 渲染进程被换掉或崩溃重建后，Emulation 状态同样会丢，下一次导航前先标记脚本需重装。
-  wc.on('render-process-gone', () => { scriptInstalled = false; });
+  wc.on('render-process-gone', () => { scriptInstalled = false; workersHooked = false; });
 
   // 兜底：addScriptToEvaluateOnNewDocument 可能赶不上首屏文档，每个新文档 dom-ready 时
   // 再用 executeJavaScript 补注入一次（脚本开头有 __TKSWARM_FP__ 守卫，重复执行无副作用）。

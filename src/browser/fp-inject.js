@@ -22,6 +22,9 @@ function buildInjectScript(seedKey, fp = {}) {
   const platform = isMac ? 'MacIntel' : String(fp.os || 'Win32');
   const languages = String(fp.languages || 'en-US').split(',').map((x) => x.trim()).filter(Boolean);
   const devicePixelRatio = Number(fp.devicePixelRatio || fp.dpr || 1) || 1;
+  const resMatch = String(fp.resolution || '').match(/(\d{3,5})\s*[x×*]\s*(\d{3,5})/i);
+  const screenW = resMatch ? Number(resMatch[1]) : 0;
+  const screenH = resMatch ? Number(resMatch[2]) : 0;
   const clientRectNoise = (seed % 7) - 3; // -3..3 px 级稳定偏移
   // SPA 每帧狂调 getBoundingClientRect，默认关闭以免卡顿；TKSWARM_FP_CLIENT_RECTS=1 可开
   const enableClientRects = fp.clientRects === true
@@ -373,6 +376,23 @@ function buildInjectScript(seedKey, fp = {}) {
       Object.defineProperty(Navigator.prototype, 'plugins', { get: () => arr, configurable: true });
     }
   } catch (e) {}
+
+  // —— Screen：宽高跟随指纹分辨率，避免窗口按指纹建、screen.* 却读真实显示器 ——
+  ${screenW > 0 && screenH > 0 ? `try {
+    const sdef = (k, v) => {
+      try {
+        const d = __findDesc(Screen.prototype, k);
+        if (!d || typeof d.get !== 'function') return;
+        const g = function() { return v; };
+        Object.defineProperty(Screen.prototype, k, { get: g, set: undefined, enumerable: d.enumerable, configurable: true });
+        __maskFn(g, d.get);
+      } catch (e) {}
+    };
+    sdef('width', ${screenW});
+    sdef('height', ${screenH});
+    sdef('availWidth', ${screenW});
+    sdef('availHeight', ${Math.max(0, screenH - 40)});
+  } catch (e) {}` : ''}
 
   // —— DPI ——
   try {
