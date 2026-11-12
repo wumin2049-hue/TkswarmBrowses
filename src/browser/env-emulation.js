@@ -18,6 +18,93 @@ const { buildUserAgentMetadata } = require('./fingerprint');
  * @param {{ profileId: string, fp?: object, userAgent?: string, locale?: string,
  *           timezone?: string, latitude?: number, longitude?: number }} src
  */
+/**
+ * 页面内时区兜底（纯 JS，不依赖 debugger）。
+ * CDP Emulation.setTimezoneOverride 会在 debugger 脱离（如打开 DevTools）、换渲染进程时整体清空，
+ * 这里在 JS 层再保一道：Intl 默认时区、getTimezoneOffset、toString 系列、toLocale* 系列。
+ * 该函数会被 toString() 序列化注入页面，因此必须自包含，不能引用外部变量。
+ */
+function tzPatch(TZ) {
+  if (window.__TKSWARM_TZ__ === TZ) return;
+  try { Object.defineProperty(window, '__TKSWARM_TZ__', { value: TZ }); } catch (e) { return; }
+  try {
+    const OrigDTF = Intl.DateTimeFormat;
+    const withTz = (o) => {
+      if (o == null) return { timeZone: TZ };
+      if (typeof o === 'object' && !o.timeZone) return { ...o, timeZone: TZ };
+      return o;
+    };
+    const Patched = function DateTimeFormat(locales, options) {
+      return Reflect.construct(OrigDTF, [locales, withTz(options)], new.target || Patched);
+    };
+    Patched.prototype = OrigDTF.prototype;
+    Patched.supportedLocalesOf = OrigDTF.supportedLocalesOf.bind(OrigDTF);
+    Intl.DateTimeFormat = Patched;
+
+    const partsFmt = new OrigDTF('en-US', {
+      timeZone: TZ, hourCycle: 'h23', weekday: 'short', year: 'numeric', month: 'short',
+      day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
+    });
+    const parts = (t) => {
+      const p = {};
+      partsFmt.formatToParts(new Date(t)).forEach((x) => { p[x.type] = x.value; });
+      return p;
+    };
+    const MONTHS = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
+    const offsetMin = (t) => {
+      const p = parts(t);
+      const asUtc = Date.UTC(+p.year, MONTHS[p.month], +p.day, (+p.hour) % 24, +p.minute, +p.second);
+      return Math.round((asUtc - Math.floor(t / 1000) * 1000) / 60000);
+    };
+    let tzName = TZ;
+    try {
+      const n = new OrigDTF(navigator.language || 'en-US', { timeZone: TZ, timeZoneName: 'long' })
+        .formatToParts(new Date()).find((x) => x.type === 'timeZoneName');
+      if (n) tzName = n.value;
+    } catch (e) { /* */ }
+    const pad = (n) => String(n).padStart(2, '0');
+    const gmt = (t) => {
+      const m = offsetMin(t);
+      const a = Math.abs(m);
+      return `GMT${m < 0 ? '-' : '+'}${pad(Math.floor(a / 60))}${pad(a % 60)} (${tzName})`;
+    };
+    const DP = Date.prototype;
+    const def = (name, fn) => { try { Object.defineProperty(DP, name, { value: fn, writable: true, configurable: true }); } catch (e) { /* */ } };
+    def('getTimezoneOffset', function getTimezoneOffset() {
+      const t = this.getTime();
+      return Number.isNaN(t) ? NaN : -offsetMin(t);
+    });
+    def('toString', function toString() {
+      const t = this.getTime();
+      if (Number.isNaN(t)) return 'Invalid Date';
+      const p = parts(t);
+      return `${p.weekday} ${p.month} ${p.day} ${p.year} ${p.hour}:${p.minute}:${p.second} ${gmt(t)}`;
+    });
+    def('toTimeString', function toTimeString() {
+      const t = this.getTime();
+      if (Number.isNaN(t)) return 'Invalid Date';
+      const p = parts(t);
+      return `${p.hour}:${p.minute}:${p.second} ${gmt(t)}`;
+    });
+    def('toDateString', function toDateString() {
+      const t = this.getTime();
+      if (Number.isNaN(t)) return 'Invalid Date';
+      const p = parts(t);
+      return `${p.weekday} ${p.month} ${p.day} ${p.year}`;
+    });
+    ['toLocaleString', 'toLocaleDateString', 'toLocaleTimeString'].forEach((name) => {
+      const orig = DP[name];
+      def(name, function (locales, options) { return orig.call(this, locales, withTz(options)); });
+    });
+  } catch (e) { /* 兜底失败不影响其它覆盖 */ }
+}
+
+function buildTimezoneScript(timezone) {
+  const tz = String(timezone || '').trim();
+  if (!tz) return '';
+  return `(${tzPatch.toString()})(${JSON.stringify(tz)});`;
+}
+
 function buildEmulationOpts(src = {}) {
   const fp = src.fp || {};
   const locale = String(src.locale || fp.languages || 'en-US');
@@ -30,6 +117,11 @@ function buildEmulationOpts(src = {}) {
       os: fp.os,
     });
   } catch { /* 注入脚本生成失败不阻断打开 */ }
+  // 时区 JS 兜底与指纹脚本合并注入（同一个 addScript + 每次 dom-ready 补注入）。
+  try {
+    const tzScript = buildTimezoneScript(src.timezone);
+    if (tzScript) injectScript = `${injectScript}\n;${tzScript}`;
+  } catch { /* */ }
   let userAgentMetadata = null;
   try { userAgentMetadata = buildUserAgentMetadata(fp); } catch { /* */ }
   return {
@@ -87,11 +179,43 @@ function applyEmulationToWc(wc, opts = {}, log = () => {}) {
 
   try { wc.setWebRTCIPHandlingPolicy('disable_non_proxied_udp'); } catch { /* 老版本无此 API */ }
 
-  let done = false;
-  const runOnce = async () => {
-    if (done) return;
-    done = true;
+  // 覆盖不能只下发一次：首次导航可能被打断（ERR_ABORTED）、重定向或换渲染进程，
+  // 此后 Emulation 状态会丢失（页面退回本机时区）。因此每次主 frame 导航都重新下发，
+  // 命令本身是幂等的；只有「指纹脚本」注册一次（debugger 脱离后才重新注册）。
+  let scriptInstalled = false;
+  let applying = false;
+  let pendingReason = '';
+  const runOnce = async (reason = '导航') => {
+    if (applying) {
+      pendingReason = reason;
+      return;
+    }
+    applying = true;
+    try {
+      await applyAll(reason);
+    } finally {
+      applying = false;
+      if (pendingReason) {
+        const next = pendingReason;
+        pendingReason = '';
+        void runOnce(next);
+      }
+    }
+  };
+  try {
+    wc.debugger.on('detach', (_e, why) => {
+      scriptInstalled = false;
+      log(`标签页 debugger 已脱离(${why})，Emulation 覆盖随之清空，稍后自动重新附加并下发`);
+      // 脱离（如打开 DevTools 把 debugger 顶掉）会立刻清空时区等覆盖，页面退回本机时区；
+      // 不等下一次导航，延迟片刻后直接重新附加下发。
+      if (why === 'target closed' || wc.isDestroyed()) return;
+      setTimeout(() => {
+        if (!wc.isDestroyed()) void runOnce('debugger脱离后重连');
+      }, 400);
+    });
+  } catch { /* */ }
 
+  const applyAll = async (reason) => {
     const dbg = wc.debugger;
     try {
       if (!dbg.isAttached()) dbg.attach('1.3');
@@ -136,9 +260,13 @@ function applyEmulationToWc(wc, opts = {}, log = () => {}) {
         latitude: opts.latitude, longitude: opts.longitude, accuracy: 100,
       }).then((ok) => ok && `定位=${opts.latitude.toFixed(2)},${opts.longitude.toFixed(2)}`));
     }
-    if (opts.injectScript) {
+    // 指纹脚本只注册一次，否则每次导航都会叠加一份；debugger 脱离后 scriptInstalled 会被清零。
+    if (opts.injectScript && !scriptInstalled) {
       tasks.push(send('Page.addScriptToEvaluateOnNewDocument', { source: opts.injectScript })
-        .then((ok) => ok && '指纹脚本'));
+        .then((ok) => {
+          if (ok) scriptInstalled = true;
+          return ok && '指纹脚本';
+        }));
     }
     // navigator.hardwareConcurrency 在页面里 non-configurable，JS 层改不动，走 CDP 覆盖。
     // 该命令较新，旧内核可能不认识，失败只记日志、不影响其它项。
@@ -149,25 +277,52 @@ function applyEmulationToWc(wc, opts = {}, log = () => {}) {
     }
 
     const applied = (await Promise.all(tasks)).filter(Boolean);
-    log(`标签页地区/指纹覆盖已应用: ${applied.join(' | ') || '无'}`
+    log(`标签页地区/指纹覆盖已应用(${reason}): ${applied.join(' | ') || '无'}`
       + (opts.timezone ? '' : '（⚠ 未解析到代理时区，窗口将使用本机时区）'));
   };
 
-  // 首次主 frame 导航开始即下发。若首次导航是 about:blank / 本地页，则等下一个真正的导航。
+  // 每次「主 frame、非页内跳转」的真实导航开始都重新下发（幂等）。
+  // 跳过 about:blank / 本地页，避免对外壳页或空白页白白附加 debugger。
   wc.on('did-start-navigation', (event) => {
-    if (done) return;
-    if (!event.isMainFrame) return;
+    if (!event.isMainFrame || event.isInPlace) return;
     const url = String(event.url || '');
     if (url === 'about:blank' || url === 'about:srcdoc' || url.startsWith('file:')) return;
-    void runOnce();
+    void runOnce('导航');
   });
 
-  // 兜底：addScriptToEvaluateOnNewDocument 在 did-start-navigation 才注册，可能赶不上首屏文档，
-  // 因此 dom-ready 时再用 executeJavaScript 补注入一次（脚本开头有 __TKSWARM_FP__ 守卫，重复执行无副作用）。
-  wc.once('dom-ready', () => {
-    if (!opts.injectScript) return;
+  // 渲染进程被换掉或崩溃重建后，Emulation 状态同样会丢，下一次导航前先标记脚本需重装。
+  wc.on('render-process-gone', () => { scriptInstalled = false; });
+
+  // 兜底：addScriptToEvaluateOnNewDocument 可能赶不上首屏文档，每个新文档 dom-ready 时
+  // 再用 executeJavaScript 补注入一次（脚本开头有 __TKSWARM_FP__ 守卫，重复执行无副作用）。
+  wc.on('dom-ready', () => {
+    if (opts.injectScript) {
+      try {
+        wc.executeJavaScript(opts.injectScript, true).catch(() => {});
+      } catch { /* */ }
+    }
+
+    // 时区自检：读回页面真实看到的时区，不一致就记日志并立刻重新下发。
+    // 既自愈，也能在日志里留下「覆盖是在哪一步丢的」的证据。
+    if (!opts.timezone) return;
     try {
-      wc.executeJavaScript(opts.injectScript, true).catch(() => {});
+      wc.executeJavaScript('Intl.DateTimeFormat().resolvedOptions().timeZone', true)
+        .then(async (tz) => {
+          if (String(tz) === opts.timezone) return;
+          log(`时区自检不一致：页面=${tz} 期望=${opts.timezone}，立即重新下发 (${String(wc.getURL()).slice(0, 80)})`);
+          try {
+            if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
+            await withTimeout(
+              wc.debugger.sendCommand('Emulation.setTimezoneOverride', { timezoneId: opts.timezone }),
+              4000,
+              'Emulation.setTimezoneOverride',
+            );
+            log('时区重新下发完成');
+          } catch (error) {
+            log(`时区重新下发失败: ${error?.message || error}`);
+          }
+        })
+        .catch(() => {});
     } catch { /* */ }
   });
 }
