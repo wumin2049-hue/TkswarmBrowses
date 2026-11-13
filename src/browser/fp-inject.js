@@ -12,10 +12,65 @@ function hashSeed(str) {
   return h >>> 0;
 }
 
+/**
+ * 现代 Chrome(Windows/D3D11) 的 UNMASKED_RENDERER 形如
+ *   ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 (0x00002184) Direct3D11 vs_5_0 ps_5_0, D3D11)
+ * 即：显卡名后带 PCI 设备号，末尾带 ", D3D11"。缺这两处就是明显的「手写字符串」。
+ * 这里对已存的值做规范化（只补缺失部分，不改显卡本身）。
+ */
+const RENDERER_DEVICE_IDS = [
+  [/Intel\(R\) UHD Graphics 630/i, '0x00003E92'],
+  [/Intel\(R\) UHD Graphics 620/i, '0x00005917'],
+  [/Intel\(R\) Iris\(R\) Xe Graphics/i, '0x00009A49'],
+  [/Intel\(R\) HD Graphics 520/i, '0x00001916'],
+  [/GeForce GTX 1660/i, '0x00002184'],
+  [/GeForce GTX 1650/i, '0x00001F82'],
+  [/GeForce RTX 2060/i, '0x00001F08'],
+  [/GeForce RTX 3060/i, '0x00002503'],
+  [/GeForce RTX 4060/i, '0x00002882'],
+  [/Radeon RX 580/i, '0x000067DF'],
+  [/Radeon RX 6600/i, '0x000073FF'],
+];
+
+function normalizeWebglRenderer(renderer) {
+  const r = String(renderer || '').trim();
+  const m = r.match(/^ANGLE \(([^,]+), (.+?) Direct3D11 vs_5_0 ps_5_0(?:, (D3D11[^)]*))?\)$/);
+  if (!m) return r;
+  let name = m[2];
+  if (!/\(0x[0-9a-f]{4,8}\)\s*$/i.test(name)) {
+    const hit = RENDERER_DEVICE_IDS.find(([re]) => re.test(name));
+    if (hit) name = `${name} (${hit[1]})`;
+  }
+  return `ANGLE (${m[1]}, ${name} Direct3D11 vs_5_0 ps_5_0, ${m[3] || 'D3D11'})`;
+}
+
+/** WebGPU adapter.info 里的 vendor / architecture，需与伪装的 WebGL 显卡同一厂商与代际 */
+function webgpuInfoOf(renderer) {
+  const s = String(renderer || '');
+  if (/NVIDIA/i.test(s)) {
+    let architecture = 'turing';
+    if (/RTX\s*40/i.test(s)) architecture = 'lovelace';
+    else if (/RTX\s*30/i.test(s)) architecture = 'ampere';
+    else if (/GTX\s*10\d\d/i.test(s)) architecture = 'pascal';
+    return { vendor: 'nvidia', architecture };
+  }
+  if (/AMD|Radeon/i.test(s)) {
+    let architecture = 'gcn-5';
+    if (/RX\s*6\d{3}/i.test(s)) architecture = 'rdna-2';
+    else if (/RX\s*[45]\d0/i.test(s)) architecture = 'gcn-4';
+    return { vendor: 'amd', architecture };
+  }
+  if (/Intel/i.test(s)) {
+    return { vendor: 'intel', architecture: /Xe/i.test(s) ? 'gen-12lp' : 'gen-9' };
+  }
+  return null;
+}
+
 function buildInjectScript(seedKey, fp = {}) {
   const seed = hashSeed(seedKey);
   const vendor = String(fp.webglVendor || 'Google Inc. (NVIDIA)');
-  const renderer = String(fp.webglRenderer || 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 Direct3D11 vs_5_0 ps_5_0)');
+  const renderer = normalizeWebglRenderer(fp.webglRenderer || 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 Direct3D11 vs_5_0 ps_5_0)');
+  const gpuInfo = webgpuInfoOf(renderer);
   const hardwareConcurrency = Number(fp.hardwareConcurrency || 8);
   const deviceMemory = Number(fp.deviceMemory || 8);
   const isMac = String(fp.os || '') === 'MacIntel';
@@ -35,9 +90,10 @@ function buildInjectScript(seedKey, fp = {}) {
       'Georgia', 'Impact', 'Segoe UI', 'Tahoma', 'Times New Roman', 'Trebuchet MS', 'Verdana'];
 
   return `(() => {
-  if (window.__TKSWARM_FP__) return;
-  // 标记必须不可枚举，否则 Object.keys(window) 一眼就能看到
-  try { Object.defineProperty(window, '__TKSWARM_FP__', { value: true }); } catch (e) { window.__TKSWARM_FP__ = true; }
+  // 防重复注入标记：用 Symbol 键 + 不可枚举，Object.getOwnPropertyNames(window) 里不会出现任何工具专属名字
+  const __FPK = Symbol.for('wr.cfg.a');
+  if (window[__FPK]) return;
+  try { Object.defineProperty(window, __FPK, { value: true }); } catch (e) {}
 
   // —— 伪装基础设施：让被覆盖的函数在 toString / name / length 上与原生一致 ——
   const __nativeToString = Function.prototype.toString;
@@ -70,6 +126,8 @@ function buildInjectScript(seedKey, fp = {}) {
     ['AudioBuffer', 'getChannelData'], ['AudioBuffer', 'copyFromChannel'],
     ['Navigator', 'platform'], ['Navigator', 'languages'], ['Navigator', 'language'],
     ['Navigator', 'webdriver'], ['Navigator', 'plugins'],
+    ['Navigator', 'deviceMemory'], ['Navigator', 'hardwareConcurrency'],
+    ['Permissions', 'query'], ['PermissionStatus', 'state'],
     ['RTCPeerConnection', 'addEventListener'], ['RTCPeerConnection', 'setLocalDescription'],
     ['RTCPeerConnection', 'createOffer'], ['RTCPeerConnection', 'onicecandidate'],
   ].forEach(([cls, key]) => {
@@ -204,6 +262,133 @@ function buildInjectScript(seedKey, fp = {}) {
     if (typeof WebGL2RenderingContext !== 'undefined') patchReadPixels(WebGL2RenderingContext.prototype);
   } catch (e) {}
 
+  // —— WebGPU：adapter.info 与上面伪装的 WebGL 显卡保持同一厂商/代际 ——
+  ${gpuInfo ? `try {
+    const GI = window.GPUAdapterInfo;
+    if (GI && GI.prototype) {
+      [['vendor', ${JSON.stringify(gpuInfo.vendor)}], ['architecture', ${JSON.stringify(gpuInfo.architecture)}]].forEach(([k, v]) => {
+        const d = Object.getOwnPropertyDescriptor(GI.prototype, k);
+        if (!d || typeof d.get !== 'function') return;
+        const g = function() { return v; };
+        Object.defineProperty(GI.prototype, k, { get: g, set: d.set, enumerable: d.enumerable, configurable: true });
+        __maskFn(g, d.get);
+      });
+    }
+  } catch (e) {}` : ''}
+
+  // —— 同源 iframe：注入脚本赶不上 JS 刚创建的 about:blank 子窗口，访问 contentWindow/contentDocument 时补打 ——
+  // 实测：页面主窗口是伪装的 GTX 1660，而 iframe 里读到真实 Intel UHD，一次跨 iframe 比对就能识破。
+  try {
+    const __kids = new WeakSet();
+    const __patchKid = (w) => {
+      try {
+        if (!w || w === window || __kids.has(w)) return;
+        const kidGL = [w.WebGLRenderingContext, w.WebGL2RenderingContext]; // 跨域窗口在这里就会抛，交给外层 catch
+        const kidNav = w.Navigator && w.Navigator.prototype;
+        const wNative = w.Function.prototype.toString;
+        __kids.add(w);
+        const kidToStr = function toString() {
+          const m = __masked.get(this);
+          return m !== undefined ? m : wNative.call(this);
+        };
+        __masked.set(kidToStr, wNative.call(wNative));
+        Object.defineProperty(w.Function.prototype, 'toString', { value: kidToStr, writable: true, configurable: true });
+        kidGL.forEach((C) => {
+          try {
+            if (!C || !C.prototype) return;
+            const orig = C.prototype.getParameter;
+            if (typeof orig !== 'function') return;
+            const f = function getParameter(param) {
+              if (param === 0x9245) return ${JSON.stringify(vendor)};
+              if (param === 0x9246) return ${JSON.stringify(renderer)};
+              return orig.call(this, param);
+            };
+            C.prototype.getParameter = f;
+            __masked.set(f, wNative.call(orig));
+          } catch (e) {}
+        });
+        if (kidNav) {
+          const kdef = (k, v) => {
+            try {
+              const d = __findDesc(kidNav, k);
+              if (!d || typeof d.get !== 'function') return;
+              const g = function() { return v; };
+              Object.defineProperty(kidNav, k, { get: g, set: undefined, enumerable: d.enumerable, configurable: true });
+              __masked.set(g, wNative.call(d.get));
+              Object.defineProperty(g, 'name', { value: d.get.name, configurable: true });
+            } catch (e) {}
+          };
+          kdef('platform', ${JSON.stringify(platform)});
+          kdef('language', ${JSON.stringify(languages[0] || 'en-US')});
+          kdef('languages', Object.freeze(w.Array.from(${JSON.stringify(languages)})));
+          kdef('deviceMemory', ${deviceMemory});
+          kdef('hardwareConcurrency', ${hardwareConcurrency});
+        }
+      } catch (e) {}
+    };
+    const __hookKid = (prop, pick) => {
+      const d = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, prop);
+      if (!d || typeof d.get !== 'function') return;
+      const g = function() {
+        const r = d.get.call(this);
+        try { __patchKid(pick(r)); } catch (e) {}
+        return r;
+      };
+      Object.defineProperty(HTMLIFrameElement.prototype, prop, { get: g, set: d.set, enumerable: d.enumerable, configurable: true });
+      __maskFn(g, d.get);
+    };
+    __hookKid('contentWindow', (r) => r);
+    __hookKid('contentDocument', (r) => r && r.defaultView);
+  } catch (e) {}
+
+  // —— 通知权限：全新环境应为 default / prompt；Electron 默认放行一切权限，页面会读到 granted ——
+  try {
+    if (typeof Notification === 'function') {
+      const nd = Object.getOwnPropertyDescriptor(Notification, 'permission');
+      if (nd && typeof nd.get === 'function') {
+        const g = function() { return 'default'; };
+        Object.defineProperty(Notification, 'permission', { get: g, set: nd.set, enumerable: nd.enumerable, configurable: true });
+        __maskFn(g, nd.get);
+      }
+      const rq = Notification.requestPermission;
+      const rd = Object.getOwnPropertyDescriptor(Notification, 'requestPermission');
+      if (typeof rq === 'function' && rd) {
+        const f = function requestPermission(cb) {
+          if (typeof cb === 'function') { try { cb('default'); } catch (e) {} }
+          return Promise.resolve('default');
+        };
+        Object.defineProperty(Notification, 'requestPermission', { ...rd, value: f });
+        __maskFn(f, rq);
+      }
+    }
+    const PS = window.PermissionStatus;
+    const PM = window.Permissions;
+    if (PS && PM && typeof PM.prototype.query === 'function') {
+      const sd = Object.getOwnPropertyDescriptor(PS.prototype, 'state');
+      if (sd && typeof sd.get === 'function') {
+        const notifStatuses = new WeakSet();
+        const sg = function() {
+          const v = sd.get.call(this);
+          return v === 'granted' && notifStatuses.has(this) ? 'prompt' : v;
+        };
+        Object.defineProperty(PS.prototype, 'state', { get: sg, set: sd.set, enumerable: sd.enumerable, configurable: true });
+        __maskFn(sg, sd.get);
+        const oq = PM.prototype.query;
+        const nq = function query(desc) {
+          const p = oq.apply(this, arguments);
+          try {
+            if (desc && desc.name === 'notifications') {
+              return p.then((st) => { try { notifStatuses.add(st); } catch (e) {} return st; });
+            }
+          } catch (e) {}
+          return p;
+        };
+        Object.defineProperty(PM.prototype, 'query', { value: nq, writable: true, enumerable: true, configurable: true });
+        __maskFn(nq, oq);
+      }
+    }
+  } catch (e) {}
+
   // —— AudioContext 指纹 ——
   //
   // 真实检测做法：OfflineAudioContext 渲染一段振荡器 → 读 outputBuffer 的浮点样本 →
@@ -257,13 +442,15 @@ function buildInjectScript(seedKey, fp = {}) {
   try {
     const def = (obj, key, value) => {
       try {
-        Object.defineProperty(obj, key, { get: () => value, configurable: true });
+        const od = __findDesc(obj, key);
+        Object.defineProperty(obj, key, { get: () => value, set: undefined, enumerable: od ? od.enumerable : false, configurable: true });
       } catch (e) {}
     };
-    // 注意：hardwareConcurrency / deviceMemory 在真实 Chrome 里是 non-configurable，
-    // 这里 Object.defineProperty 必然抛 TypeError（被上面 def 静默吞掉），覆盖无效。
-    // 这两个值改由主进程 CDP 的 Emulation.setHardwareConcurrencyOverride 处理，
-    // 不要在这里再尝试，否则会给人「已覆盖」的假象、实际泄露本机值。
+    // hardwareConcurrency / deviceMemory 是 Navigator.prototype 上 configurable 的访问器（Worker 里同样的覆盖已验证生效），
+    // 页面里同样可以覆盖。实测不覆盖时页面 deviceMemory 读到本机值(16)，与 Worker(8) 矛盾。
+    // hardwareConcurrency 另有 CDP Emulation.setHardwareConcurrencyOverride，这里再兜一层，两者取值相同。
+    if (__findDesc(Navigator.prototype, 'deviceMemory')) def(Navigator.prototype, 'deviceMemory', ${deviceMemory});
+    if (__findDesc(Navigator.prototype, 'hardwareConcurrency')) def(Navigator.prototype, 'hardwareConcurrency', ${hardwareConcurrency});
     // 浏览器标识类属性（platform/languages/language 是 configurable 的，可在此覆盖）
     def(Navigator.prototype, 'platform', ${JSON.stringify(platform)});
     def(Navigator.prototype, 'languages', Object.freeze(${JSON.stringify(languages)}));
@@ -574,4 +761,4 @@ function buildInjectScript(seedKey, fp = {}) {
 })();`;
 }
 
-module.exports = { buildInjectScript, hashSeed };
+module.exports = { buildInjectScript, hashSeed, normalizeWebglRenderer, webgpuInfoOf };

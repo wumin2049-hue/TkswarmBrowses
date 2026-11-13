@@ -11,8 +11,12 @@
  *   - Page.addScriptToEvaluateOnNewDocument（Canvas / WebGL / Audio / WebRTC 指纹脚本）
  * 并把 WebRTC IP 处理策略设为只走代理，防止真实 IP 经 STUN 泄露。
  */
-const { buildInjectScript } = require('./fp-inject');
-const { buildUserAgentMetadata } = require('./fingerprint');
+const { buildInjectScript, normalizeWebglRenderer, webgpuInfoOf } = require('./fp-inject');
+const { buildUserAgentMetadata, buildClientHintHeaders } = require('./fingerprint');
+
+// 低熵 Client Hints：真实 Chrome 对每个 http(s) 请求都会带，Electron 在自定义 UA 后一个都不发。
+// 实测（httpbin 回显）：仅 CDP setUserAgentOverride 时首个请求完全没有 sec-ch-ua*。
+const LOW_ENTROPY_HINTS = ['sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform'];
 
 /**
  * @param {{ profileId: string, fp?: object, userAgent?: string, locale?: string,
@@ -25,8 +29,10 @@ const { buildUserAgentMetadata } = require('./fingerprint');
  * 该函数会被 toString() 序列化注入页面，因此必须自包含，不能引用外部变量。
  */
 function tzPatch(TZ) {
-  if (window.__TKSWARM_TZ__ === TZ) return;
-  try { Object.defineProperty(window, '__TKSWARM_TZ__', { value: TZ }); } catch (e) { return; }
+  // 防重复标记：Symbol 键 + 不可枚举，window 的字符串属性名里不会出现工具专属名字
+  const TZK = Symbol.for('wr.cfg.t');
+  if (window[TZK] === TZ) return;
+  try { Object.defineProperty(window, TZK, { value: TZ }); } catch (e) { return; }
   try {
     const OrigDTF = Intl.DateTimeFormat;
     const withTz = (o) => {
@@ -185,6 +191,37 @@ function workerPatch(CFG) {
     }
     if (CFG.hardwareConcurrency > 0) def('hardwareConcurrency', CFG.hardwareConcurrency);
     if (CFG.deviceMemory > 0) def('deviceMemory', CFG.deviceMemory);
+
+    // Worker 里的 OffscreenCanvas WebGL：实测会泄露真实显卡(Intel UHD)，与页面伪装的显卡矛盾
+    if (CFG.webglRenderer) {
+      [self.WebGLRenderingContext, self.WebGL2RenderingContext].forEach((C) => {
+        try {
+          if (!C || !C.prototype) return;
+          const orig = C.prototype.getParameter;
+          if (typeof orig !== 'function') return;
+          const f = function getParameter(param) {
+            if (param === 0x9245) return CFG.webglVendor;
+            if (param === 0x9246) return CFG.webglRenderer;
+            return orig.call(this, param);
+          };
+          C.prototype.getParameter = f;
+          mask(f, orig);
+        } catch (e) { /* */ }
+      });
+    }
+    // Worker 里的 WebGPU adapter.info
+    if (CFG.gpuInfo && self.GPUAdapterInfo && self.GPUAdapterInfo.prototype) {
+      const GP = self.GPUAdapterInfo.prototype;
+      [['vendor', CFG.gpuInfo.vendor], ['architecture', CFG.gpuInfo.architecture]].forEach(([k, v]) => {
+        try {
+          const d = Object.getOwnPropertyDescriptor(GP, k);
+          if (!d || typeof d.get !== 'function') return;
+          const g = function () { return v; };
+          Object.defineProperty(GP, k, { get: g, set: d.set, enumerable: d.enumerable, configurable: true });
+          mask(g, d.get);
+        } catch (e) { /* */ }
+      });
+    }
   } catch (e) { /* */ }
 }
 
@@ -227,6 +264,22 @@ function buildEmulationOpts(src = {}) {
     userAgent: String(src.userAgent || ''),
     platform: String(fp.os || 'Win32'),
     userAgentMetadata,
+    clientHints: (() => {
+      try {
+        const all = buildClientHintHeaders(fp, locale);
+        const low = {};
+        for (const k of LOW_ENTROPY_HINTS) if (all[k]) low[k] = all[k];
+        return low;
+      } catch { return {}; }
+    })(),
+    // 全量 hints：服务器经 Accept-CH 索取后，按需附加高熵项（Electron 自身不处理 Accept-CH）
+    allClientHints: (() => {
+      try {
+        const all = buildClientHintHeaders(fp, locale);
+        delete all['accept-language'];
+        return all;
+      } catch { return {}; }
+    })(),
     injectScript,
     // 这两个属性在页面里是 non-configurable，JS 层 defineProperty 必然失败，
     // 只能走 CDP Emulation 覆盖（见 applyEmulationToWc）。
@@ -240,6 +293,10 @@ function buildEmulationOpts(src = {}) {
       hardwareConcurrency: Number(fp.hardwareConcurrency || 0),
       deviceMemory: Number(fp.deviceMemory || 0),
       timezone: String(src.timezone || ''),
+      // 与页面里 fp-inject 使用同一份（规范化后的）显卡信息，避免 Worker 与页面不一致
+      webglVendor: String(fp.webglVendor || ''),
+      webglRenderer: fp.webglRenderer ? normalizeWebglRenderer(fp.webglRenderer) : '',
+      gpuInfo: fp.webglRenderer ? webgpuInfoOf(normalizeWebglRenderer(fp.webglRenderer)) : null,
     }),
   };
 }
@@ -278,8 +335,104 @@ function acceptLanguageOf(locale) {
  * @param {(msg: string) => void} [log]
  * @returns {void}
  */
+// session -> 指纹注入脚本；preload 通过 IPC 同步取回
+const earlyScripts = new WeakMap();
+const earlyPreloaded = new WeakSet();
+let earlyIpcBound = false;
+
+/**
+ * 给内容页 session 注册早期注入 preload，让指纹覆盖赶在首个文档的页面脚本之前生效。
+ * CDP 的 addScriptToEvaluateOnNewDocument 仍保留作兜底（脚本自带守卫，重复执行无副作用）。
+ */
+function installEarlyInject(wc, opts, log) {
+  try {
+    if (!opts || !opts.injectScript) return;
+    // 排查开关：TKSWARM_EARLY_FP=0 可关闭早期注入，便于对照
+    if (String(process.env.TKSWARM_EARLY_FP || '') === '0') { log('早期指纹注入已被 TKSWARM_EARLY_FP=0 关闭'); return; }
+    const { ipcMain } = require('electron');
+    const nodePath = require('node:path');
+    const ses = wc.session;
+    if (!ses) return;
+    earlyScripts.set(ses, opts.injectScript);
+    if (!earlyIpcBound) {
+      earlyIpcBound = true;
+      ipcMain.on('tkswarm:early-fp', (event) => {
+        let src = '';
+        try { src = earlyScripts.get(event.sender.session) || ''; } catch { /* */ }
+        event.returnValue = src;
+      });
+    }
+    if (earlyPreloaded.has(ses)) return;
+    earlyPreloaded.add(ses);
+    const file = nodePath.join(__dirname, '../../electron/early-fp-preload.js');
+    if (typeof ses.registerPreloadScript === 'function') {
+      ses.registerPreloadScript({ type: 'frame', filePath: file });
+    } else {
+      ses.setPreloads([...ses.getPreloads(), file]);
+    }
+    log('早期指纹注入 preload 已注册');
+  } catch (error) {
+    log(`早期指纹注入 preload 注册失败: ${error?.message || error}`);
+  }
+}
+
+const clientHintSessions = new WeakSet();
+
+/** 在网络层给每个 http(s) 请求补上低熵 Client Hints，首个文档请求也不例外 */
+function installClientHintHeaders(wc, opts, log) {
+  try {
+    const hints = opts && opts.clientHints;
+    if (!hints || !Object.keys(hints).length) return;
+    if (String(process.env.TKSWARM_CLIENT_HINTS || '') === '0') { log('Client Hints 请求头补全已被 TKSWARM_CLIENT_HINTS=0 关闭'); return; }
+    const ses = wc.session;
+    if (!ses || clientHintSessions.has(ses)) return;
+    clientHintSessions.add(ses);
+    const allHints = opts.allClientHints || {};
+    // origin -> 该站通过 Accept-CH 索取的高熵 hint 头名（小写）
+    const requested = new Map();
+    const originOf = (u) => { try { return new URL(u).origin; } catch { return ''; } };
+    ses.webRequest.onHeadersReceived({ urls: ['http://*/*', 'https://*/*'] }, (details, callback) => {
+      try {
+        const rh = details.responseHeaders || {};
+        const key = Object.keys(rh).find((n) => n.toLowerCase() === 'accept-ch');
+        if (key) {
+          const origin = originOf(details.url);
+          const list = [].concat(rh[key]).join(',').split(',')
+            .map((s) => s.trim().toLowerCase())
+            .filter((s) => s.startsWith('sec-ch-ua') && !LOW_ENTROPY_HINTS.includes(s) && allHints[s]);
+          if (origin && list.length) {
+            const set = requested.get(origin) || new Set();
+            list.forEach((h) => set.add(h));
+            requested.set(origin, set);
+          }
+        }
+      } catch { /* */ }
+      callback({});
+    });
+    ses.webRequest.onBeforeSendHeaders({ urls: ['http://*/*', 'https://*/*'] }, (details, callback) => {
+      try {
+        const rh = { ...details.requestHeaders };
+        // 先清掉 Electron 可能带的 sec-ch-ua*，再统一由我们按真实 Chrome 的行为补：
+        // 低熵三项每个请求都带；高熵项只在该站 Accept-CH 索取过之后才带（同源）
+        for (const name of Object.keys(rh)) {
+          if (name.toLowerCase().startsWith('sec-ch-ua')) delete rh[name];
+        }
+        for (const [k, v] of Object.entries(hints)) rh[k] = v;
+        const set = requested.get(originOf(details.url));
+        if (set) for (const h of set) rh[h] = allHints[h];
+        callback({ requestHeaders: rh });
+      } catch { callback({}); }
+    });
+    log('Client Hints 请求头补全已注册（低熵常带，高熵按 Accept-CH 索取）');
+  } catch (error) {
+    log(`Client Hints 请求头补全注册失败: ${error?.message || error}`);
+  }
+}
+
 function applyEmulationToWc(wc, opts = {}, log = () => {}) {
   if (!wc || wc.isDestroyed()) return;
+  installEarlyInject(wc, opts, log);
+  installClientHintHeaders(wc, opts, log);
 
   try { wc.setWebRTCIPHandlingPolicy('disable_non_proxied_udp'); } catch { /* 老版本无此 API */ }
 
@@ -450,7 +603,7 @@ function applyEmulationToWc(wc, opts = {}, log = () => {}) {
   wc.on('render-process-gone', () => { scriptInstalled = false; workersHooked = false; });
 
   // 兜底：addScriptToEvaluateOnNewDocument 可能赶不上首屏文档，每个新文档 dom-ready 时
-  // 再用 executeJavaScript 补注入一次（脚本开头有 __TKSWARM_FP__ 守卫，重复执行无副作用）。
+  // 再用 executeJavaScript 补注入一次（脚本开头有 Symbol 守卫，重复执行无副作用）。
   wc.on('dom-ready', () => {
     if (opts.injectScript) {
       try {

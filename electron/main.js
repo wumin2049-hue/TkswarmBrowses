@@ -108,6 +108,7 @@ if (IS_ENV_PROCESS) {
         preload: path.join(__dirname, 'preload.js'),
         contextIsolation: true,
         nodeIntegration: false,
+        additionalArguments: [`--tkswarm-api-port=${API_PORT}`],
       },
     });
     applyWindowIcon(mainWindow);

@@ -154,10 +154,53 @@ function buildUserAgent(fp) {
   return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${ver}.0.0.0 Safari/537.36`;
 }
 
-/** Sec-CH-UA 近似串（供后续 CDP Network 覆盖用） */
+/**
+ * 复刻 Chromium GenerateBrandVersionList 的 GREASE 算法（以主版本号为 seed）：
+ *   品牌 = "Not" + chars[seed%11] + "A" + chars[(seed+1)%11] + "Brand"
+ *   版本 = ["8","99","24"][seed%3]
+ *   顺序 = orders[seed%6]，依次给出 GREASE / Chromium / Google Chrome 所在下标
+ * 用已知真实输出核对：Chrome 131 → Google Chrome, Chromium, Not_A Brand;v=24；
+ * Chrome 136 → Chromium, Google Chrome, Not.A/Brand;v=99。
+ * 之前写死 "Not-A.Brand";v=99 且排第一，与任何真实版本的输出都对不上。
+ */
+function greaseBrandList(major, fullVer) {
+  const seed = Number(major) || 0;
+  const chars = [' ', '(', ':', '-', '.', '/', ')', ';', '=', '?', '_'];
+  const greaseBrand = `Not${chars[seed % 11]}A${chars[(seed + 1) % 11]}Brand`;
+  const greaseMajor = ['8', '99', '24'][seed % 3];
+  const orders = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
+  const order = orders[seed % 6];
+  const arrange = (grease, chromium, chrome) => {
+    const list = new Array(3);
+    list[order[0]] = grease;
+    list[order[1]] = chromium;
+    list[order[2]] = chrome;
+    return list;
+  };
+  const m = String(major);
+  const full = String(fullVer || `${m}.0.0.0`);
+  return {
+    brands: arrange(
+      { brand: greaseBrand, version: greaseMajor },
+      { brand: 'Chromium', version: m },
+      { brand: 'Google Chrome', version: m },
+    ),
+    fullVersionList: arrange(
+      { brand: greaseBrand, version: `${greaseMajor}.0.0.0` },
+      { brand: 'Chromium', version: full },
+      { brand: 'Google Chrome', version: full },
+    ),
+  };
+}
+
+function brandListToHeader(list) {
+  return list.map((b) => `"${b.brand}";v="${b.version}"`).join(', ');
+}
+
+/** Sec-CH-UA 串，与 navigator.userAgentData.brands 同源 */
 function buildSecChUa(fp = {}) {
   const ver = normalizeCoreVersion(fp.coreVersion);
-  return `"Not-A.Brand";v="99", "Google Chrome";v="${ver}", "Chromium";v="${ver}"`;
+  return brandListToHeader(greaseBrandList(ver).brands);
 }
 
 /* ------------------------------------------------------------------ *
@@ -247,17 +290,10 @@ function buildUserAgentMetadata(fp = {}) {
   const ver = normalizeCoreVersion(fp.coreVersion);
   const fullVer = realCoreFullVersion(ver);
   const isMac = fp.os === 'MacIntel';
+  const grease = greaseBrandList(ver, fullVer);
   return {
-    brands: [
-      { brand: 'Not-A.Brand', version: '99' },
-      { brand: 'Google Chrome', version: String(ver) },
-      { brand: 'Chromium', version: String(ver) },
-    ],
-    fullVersionList: [
-      { brand: 'Not-A.Brand', version: '99.0.0.0' },
-      { brand: 'Google Chrome', version: fullVer },
-      { brand: 'Chromium', version: fullVer },
-    ],
+    brands: grease.brands,
+    fullVersionList: grease.fullVersionList,
     fullVersion: fullVer,
     platform: isMac ? 'macOS' : 'Windows',
     // 必须与真实系统一致：Win10 是 10.0.0，Win11 是 13~16.x
@@ -282,8 +318,9 @@ function buildClientHintHeaders(fp = {}, locale = 'en-US') {
   const acceptLang = primaryLang.includes('-') && baseLang.toLowerCase() !== primaryLang.toLowerCase()
     ? `${primaryLang},${baseLang};q=0.9`
     : `${primaryLang};q=0.9`;
+  const grease = greaseBrandList(ver, fullVer);
   return {
-    'sec-ch-ua': `"Not-A.Brand";v="99", "Google Chrome";v="${ver}", "Chromium";v="${ver}"`,
+    'sec-ch-ua': brandListToHeader(grease.brands),
     'sec-ch-ua-mobile': '?0',
     'sec-ch-ua-platform': isMac ? '"macOS"' : '"Windows"',
     'sec-ch-ua-platform-version': isMac ? '"14.5.0"' : `"${detectPlatformVersion()}"`,
@@ -291,7 +328,7 @@ function buildClientHintHeaders(fp = {}, locale = 'en-US') {
     'sec-ch-ua-bitness': '"64"',
     'sec-ch-ua-model': '""',
     'sec-ch-ua-full-version': `"${fullVer}"`,
-    'sec-ch-ua-full-version-list': `"Not-A.Brand";v="99.0.0.0", "Google Chrome";v="${fullVer}", "Chromium";v="${fullVer}"`,
+    'sec-ch-ua-full-version-list': brandListToHeader(grease.fullVersionList),
     'accept-language': acceptLang,
   };
 }
@@ -303,6 +340,7 @@ module.exports = {
   buildSecChUa,
   buildUserAgentMetadata,
   buildClientHintHeaders,
+  greaseBrandList,
   normalizeCoreVersion,
   syncRealCoreVersion,
   alignedCoreVersion,
